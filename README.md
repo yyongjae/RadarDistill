@@ -24,7 +24,7 @@ Please see [getting_started.md](./docs/GETTING_STARTED.md)
 To create the `pillarnet_fullset_init.pth` initialization checkpoint, run the following script:
 ### **1. Prepare Checkpoints**
 Ensure the following files are placed in the `ckpt/` directory:
-- [`pillarnet_fullset_lidar.pth`](https://github.com/your-repo/releases/download/v0.0.1/pillarnet_fullset_lidar.pth)
+- [`pillarnet_fullset_lidar.pth`](https://github.com/geonhobang/RadarDistill/releases/download/v0.0.1/pillarnet_fullset_lidar.pth)
 ### **2. Run the Python Script**
 Run the provided script to generate the initialization checkpoint:
 ```bash
@@ -91,14 +91,13 @@ python test.py --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE} --ckpt ${CHE
 
 ---
 
-
 ## **Model Zoo**
 
 ### **Radar Models**
 | Method                          | mAP  | NDS  | Checkpoint                                                                                           |
 |---------------------------------|-------|-------|-------------------------------------------------------------------------------------------------------|
-| **PillarNet (Radar, student)**  | 8.6  | 34.7  | [Download](https://github.com/your-repo/releases/download/v0.0.1/pillarnet_fullset_radar.pth)         |
-| **RadarDistill**          | 20.5  | 43.7  | [Download](https://github.com/your-repo/releases/download/v0.0.1/radar_distill.pth)                  |
+| **PillarNet (Radar, student)**  | 8.6  | 34.7  | [Download](https://github.com/geonhobang/RadarDistill/releases/download/v0.0.1/pillarnet_fullset_radar.pth)         |
+| **RadarDistill**          | 20.5  | 43.7  | [Download](https://github.com/geonhobang/RadarDistill/releases/download/v0.0.1/radar_distill.pth)                  |
 
 
 ## Acknowledgements

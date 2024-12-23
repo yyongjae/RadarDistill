@@ -13,7 +13,7 @@ The inherent noisy and sparse characteristics of radar data pose challenges in f
 
 <h1>Methods</h1>
 
-![method](./figs/radardistill_overall.png "model arch")
+![method](./figs/radardistill_overal.png "model arch")
 **Overall architecture of RadarDistill**:The input point clouds from each modality are independently processed through Pillar Encoding followed by SparseEnc to extract low-level BEV features. CMA is then employed to densify the low-level BEV features in the radar branch. AFD then identifies active and inactive regions based on both radar and LiDAR features and minimizes their associated distillation losses. Subsequently, PFD conducts knowledge distillation based on proposal-level features obtained from DenseEnc. Note that the LiDAR branch is solely utilized during the training phase to enhance the radar pipeline and is not required during inference.
 
 

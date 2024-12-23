@@ -18,7 +18,7 @@ The inherent noisy and sparse characteristics of radar data pose challenges in f
 
 
 # Getting Started
-Please see [getting_started.md](docs/getting_started.md)
+Please see [getting_started.md](./docs/GETTING_STARTED.md)
 
 <!--
 ## Training (R50 CRT-Fusion)

@@ -42,3 +42,50 @@ sh make.sh
 ```
 
 
+## NuScenes Dataset Preparation for Distillation
+
+This guide explains how to prepare the NuScenes dataset for use with the distillation framework. It assumes you have already cloned the repository and installed the necessary dependencies.
+
+### **1. Download NuScenes Dataset**
+Download the official [NuScenes 3D object detection dataset](https://www.nuscenes.org/download) and organize the dataset as follows:
+```plaintext
+RadarDistill
+├── data
+│   ├── nuscenes
+│   │   ├── v1.0-trainval
+│   │   │   ├── samples
+│   │   │   ├── sweeps
+│   │   │   ├── maps
+│   │   │   ├── v1.0-trainval
+│   │   ├── v1.0-test
+├── pcdet
+├── tools
+```
+---
+
+### **2. Dataset Preparation Commands**
+To preprocess the NuScenes dataset for distillation, run the following command:
+```bash
+python -m pcdet.datasets.nuscenes.nuscenes_dataset_distill --func create_nuscenes_infos \
+    --cfg_file tools/cfgs/dataset_configs/nuscenes_dataset_distill.yaml \
+    --version v1.0-trainval
+```
+
+### **3. Generated Files**
+After running the commands, the following files will be created:
+```plaintext
+RadarDistill
+├── data
+│   ├── nuscenes
+│   │   ├── gt_database_10sweeps_with_radar_withvelo
+│   │   ├── nuscenes_infos_6radar_10sweeps_train.pkl
+│   │   ├── nuscenes_infos_6radar_10sweeps_val.pkl
+│   │   ├── nuscenes_dbinfos_10sweeps_with_radar_withvelo.pkl
+```
+
+
+
+
+
+
+

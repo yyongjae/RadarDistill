@@ -32,7 +32,7 @@ conda install pytorch==1.10.0 torchvision==0.11.1 torchaudio==0.10.0 cudatoolkit
 
 ### **3. Install `RadarDistll`**
 ```bash
-git clone https://github.com/your-username/RadarDistill.git
+git clone https://github.com/geonhobang/RadarDistill.git
 cd RadarDistill
 pip install -r requirements.txt
 python setup.py develop

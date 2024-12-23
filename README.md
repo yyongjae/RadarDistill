@@ -20,33 +20,86 @@ The inherent noisy and sparse characteristics of radar data pose challenges in f
 # Getting Started
 Please see [getting_started.md](./docs/GETTING_STARTED.md)
 
-<!--
-## Training (R50 CRT-Fusion)
-**Phase 1:**
-```shell
-./tools/dist_train.sh configs/crt-fusion/crtfusion-r50-fp16_phase1.py 4 --gpus 4 --work-dir {phase1_work_dirs} --no-validate
-python tools/swap_ema_and_non_ema.py {phase1_work_dirs}/iter_10548.pth
+# Generate Initialization Checkpoint
+To create the `pillarnet_fullset_init.pth` initialization checkpoint, run the following script:
+### **1. Prepare Checkpoints**
+Ensure the following files are placed in the `ckpt/` directory:
+- [`pillarnet_fullset_lidar.pth`](https://github.com/your-repo/releases/download/v0.0.1/pillarnet_fullset_lidar.pth)
+### **2. Run the Python Script**
+Run the provided script to generate the initialization checkpoint:
+```bash
+python ckpt.py
 ```
-**Phase 2:**
-```shell
-./tools/dist_train.sh configs/crt-fusion/crtfusion-r50-fp16_phase2.py 4 --gpus 4 --work-dir {phase2_work_dirs} --resume-from {phase1_work_dirs}/iter_10548_ema.pth
-python tools/swap_ema_and_non_ema.py {phase2_work_dirs}/iter_42192.pth
+### **3. Output**
+After running the script, the generated initialization checkpoint (`pillarnet_fullset_init.pth`) will be located in the `ckpt/` directory.
+
+---
+
+## **Training & Testing**
+
+This section provides commands to train and evaluate models with RadarDistill. The commands are consistent with the `pcdet` framework and support multi-GPU training and testing.
+
+---
+
+### **Train a Model**
+
+#### **1. Train with Multiple GPUs**
+To train a model with multiple GPUs:
+```bash
+bash scripts/dist_train.sh ${NUM_GPUS} --cfg_file ${CONFIG_FILE} --pretrained_model ${PRETRAINED_MODEL}
+```
+Example:
+```bash
+bash scripts/dist_train.sh 4 --cfg_file cfgs/radar_distill/radar_distill_train.yaml --pretrained_model ../ckpt/pillarnet_fullset_init.pth
 ```
 
-## Inference (R50 CRT-Fusion)
-**Run the following commands:**
-```shell
-./tools/dist_test.sh configs/crt-fusion/crtfusion-r50-fp16_phase2.py {phase2_work_dirs}/iter_42192_ema.pth 1 --eval bbox
+#### **2. Train with a Single GPU**
+To train a model with a single GPU:
+```bash
+python train.py --cfg_file ${CONFIG_FILE} --pretrained_model ${PRETRAINED_MODEL}
 ```
 
-## Model Zoo
-We further optimized our models, which resulted in a slight difference compared to the performance reported in the paper.
+Example:
+```bash
+python train.py --cfg_file cfgs/radar_distill/radar_distill_train.yaml --pretrained_model ../ckpt/pillarnet_fullset_init.pth
+```
+---
 
-|Method|mAP|NDS|Model
-|-|-|-|-|
-|[**R50 CRT-Fusion**](configs/crt-fusion/crtfusion-r50-fp16_phase2.py)|49.3|57.9|[Link](https://github.com/mjseong0414/CRT-Fusion/releases/download/v0.0.0/crt-fusion-r50-42192_ema.pth)
-|[**R50 CRT-Fusion-light-cbgs**](configs/crt-fusion/crtfusion-r50-fp16_phase2_light_cbgs.py)|48.9|58.7|[Link](https://github.com/mjseong0414/CRT-Fusion/releases/download/v0.0.0/crt-fusion-r50-light-cbgs-160100_ema.pth)
--->
+### **Test a Model**
+
+#### **1. Test with Multiple GPUs**
+To test a model with multiple GPUs:
+```bash
+bash scripts/dist_test.sh ${NUM_GPUS} --cfg_file ${CONFIG_FILE} --ckpt ${CHECKPOINT_PATH}
+```
+Example:
+```bash
+bash scripts/dist_test.sh 4 --cfg_file cfgs/radar_distill/radar_distill_val.yaml --ckpt ../output/radar_distill/ckpt/checkpoint_epoch_40.pth
+```
+
+#### **2. Test All Saved Checkpoints**
+To test all saved checkpoints for a specific training setting and draw the performance curve on Tensorboard:
+```bash
+python test.py --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE} --eval_all
+```
+
+#### **3. Test with a Single GPU**
+To test a model with a single GPU:
+```bash
+python test.py --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE} --ckpt ${CHECKPOINT_PATH}
+```
+
+---
+
+
+## **Model Zoo**
+
+### **Radar Models**
+| Method                          | mAP  | NDS  | Checkpoint                                                                                           |
+|---------------------------------|-------|-------|-------------------------------------------------------------------------------------------------------|
+| **PillarNet (Radar, student)**  | 8.6  | 34.7  | [Download](https://github.com/your-repo/releases/download/v0.0.1/pillarnet_fullset_radar.pth)         |
+| **RadarDistill**          | 20.5  | 43.7  | [Download](https://github.com/your-repo/releases/download/v0.0.1/radar_distill.pth)                  |
+
 
 ## Acknowledgements
 We thank numerous excellent works and open-source codebases:

@@ -29,7 +29,6 @@ Ensure the following files are placed in the `ckpt/` directory:
 Run the provided script to generate the initialization checkpoint:
 ```bash
 python ckpt.py
-<<<<<<< HEAD
 ```
 ### **3. Output**
 After running the script, the generated initialization checkpoint (`pillarnet_fullset_init.pth`) will be located in the `ckpt/` directory.
@@ -90,8 +89,8 @@ To test a model with a single GPU:
 python test.py --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE} --ckpt ${CHECKPOINT_PATH}
 ```
 
-=======
-```
+---
+
 ### **3. Output**
 After running the script, the generated initialization checkpoint (`pillarnet_fullset_init.pth`) will be located in the `ckpt/` directory.
 

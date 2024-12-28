@@ -29,6 +29,68 @@ Ensure the following files are placed in the `ckpt/` directory:
 Run the provided script to generate the initialization checkpoint:
 ```bash
 python ckpt.py
+<<<<<<< HEAD
+```
+### **3. Output**
+After running the script, the generated initialization checkpoint (`pillarnet_fullset_init.pth`) will be located in the `ckpt/` directory.
+
+---
+
+## **Training & Testing**
+
+This section provides commands to train and evaluate models with RadarDistill. The commands are consistent with the `pcdet` framework and support multi-GPU training and testing.
+
+---
+
+### **Train a Model**
+
+#### **1. Train with Multiple GPUs**
+To train a model with multiple GPUs:
+```bash
+bash scripts/dist_train.sh ${NUM_GPUS} --cfg_file ${CONFIG_FILE} --pretrained_model ${PRETRAINED_MODEL}
+```
+Example:
+```bash
+bash scripts/dist_train.sh 4 --cfg_file cfgs/radar_distill/radar_distill_train.yaml --pretrained_model ../ckpt/pillarnet_fullset_init.pth
+```
+
+#### **2. Train with a Single GPU**
+To train a model with a single GPU:
+```bash
+python train.py --cfg_file ${CONFIG_FILE} --pretrained_model ${PRETRAINED_MODEL}
+```
+
+Example:
+```bash
+python train.py --cfg_file cfgs/radar_distill/radar_distill_train.yaml --pretrained_model ../ckpt/pillarnet_fullset_init.pth
+```
+---
+
+### **Test a Model**
+
+#### **1. Test with Multiple GPUs**
+To test a model with multiple GPUs:
+```bash
+bash scripts/dist_test.sh ${NUM_GPUS} --cfg_file ${CONFIG_FILE} --ckpt ${CHECKPOINT_PATH}
+```
+Example:
+```bash
+bash scripts/dist_test.sh 4 --cfg_file cfgs/radar_distill/radar_distill_val.yaml --ckpt ../output/radar_distill/ckpt/checkpoint_epoch_40.pth
+```
+
+#### **2. Test All Saved Checkpoints**
+To test all saved checkpoints for a specific training setting and draw the performance curve on Tensorboard:
+```bash
+python test.py --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE} --eval_all
+```
+
+#### **3. Test with a Single GPU**
+To test a model with a single GPU:
+```bash
+python test.py --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE} --ckpt ${CHECKPOINT_PATH}
+```
+
+=======
 ```
 ### **3. Output**
 After running the script, the generated initialization checkpoint (`pillarnet_fullset_init.pth`) will be located in the `ckpt/` directory.

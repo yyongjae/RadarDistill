@@ -69,6 +69,7 @@ To preprocess the NuScenes dataset for distillation, run the following command:
 python -m pcdet.datasets.nuscenes.nuscenes_dataset_distill --func create_nuscenes_infos \
     --cfg_file tools/cfgs/dataset_configs/nuscenes_dataset_distill.yaml \
     --version v1.0-trainval
+<<<<<<< HEAD
 ```
 
 ### **3. Generated Files**
@@ -135,4 +136,18 @@ sh scripts/slurm_train.sh ${PARTITION} ${JOB_NAME} ${NUM_GPUS} --cfg_file ${CONF
 * Train with a single GPU:
 ```shell script
 python train.py --cfg_file ${CONFIG_FILE}
+```
+=======
+```
+
+### **3. Generated Files**
+After running the commands, the following files will be created:
+```plaintext
+RadarDistill
+├── data
+│   ├── nuscenes
+│   │   ├── gt_database_10sweeps_with_radar_withvelo
+│   │   ├── nuscenes_infos_6radar_10sweeps_train.pkl
+│   │   ├── nuscenes_infos_6radar_10sweeps_val.pkl
+│   │   ├── nuscenes_dbinfos_10sweeps_with_radar_withvelo.pkl
 ```

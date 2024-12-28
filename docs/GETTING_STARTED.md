@@ -69,7 +69,6 @@ To preprocess the NuScenes dataset for distillation, run the following command:
 python -m pcdet.datasets.nuscenes.nuscenes_dataset_distill --func create_nuscenes_infos \
     --cfg_file tools/cfgs/dataset_configs/nuscenes_dataset_distill.yaml \
     --version v1.0-trainval
-<<<<<<< HEAD
 ```
 
 ### **3. Generated Files**
@@ -137,8 +136,7 @@ sh scripts/slurm_train.sh ${PARTITION} ${JOB_NAME} ${NUM_GPUS} --cfg_file ${CONF
 ```shell script
 python train.py --cfg_file ${CONFIG_FILE}
 ```
-=======
-```
+---
 
 ### **3. Generated Files**
 After running the commands, the following files will be created:

@@ -91,7 +91,7 @@ python test.py --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE} --ckpt ${CHE
 ```
 
 =======
-```
+
 ### **3. Output**
 After running the script, the generated initialization checkpoint (`pillarnet_fullset_init.pth`) will be located in the `ckpt/` directory.
 

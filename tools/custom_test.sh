@@ -1,0 +1,1 @@
+PORT=111 CUDA_VISIBLE_DEVICES=0,2,3 bash scripts/dist_test.sh 3 --cfg_file cfgs/radar_distill/radar_distill_val.yaml --ckpt ../output/radar_distill/radar_distill_train/radardistill_refactoring/ckpt/checkpoint_epoch_31.pth

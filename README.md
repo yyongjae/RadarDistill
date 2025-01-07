@@ -164,6 +164,8 @@ python test.py --cfg_file ${CONFIG_FILE} --batch_size ${BATCH_SIZE} --ckpt ${CHE
 ## Acknowledgements
 We thank numerous excellent works and open-source codebases:
 - [OpenPCDet](https://github.com/open-mmlab/OpenPCDet)
+- [CRN](https://github.com/youngskkim/CRN)
+- [FG-PFE](https://github.com/konyul/FG-PFE)
 
 # Bibtex
 If this work is helpful for your research, please consider citing the following BibTeX entry.

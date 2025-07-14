@@ -88,7 +88,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
             mask = ~((np.abs(points[:, 0]) < center_radius) & (np.abs(points[:, 1]) < center_radius))
             return points[mask]
 
-        lidar_path = self.root_path / sweep_info['lidar_path']
+        lidar_path = self.root_path.parent / sweep_info['lidar_path']
         points_sweep = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
         points_sweep = remove_ego_points(points_sweep).T
         if sweep_info['transform_matrix'] is not None:
@@ -101,7 +101,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
 
     def get_lidar_with_sweeps(self, index, max_sweeps=1):
         info = self.infos[index]
-        lidar_path = self.root_path / info['lidar_path']
+        lidar_path = self.root_path.parent / info['lidar_path']
         points = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
 
         sweep_points_list = [points]
@@ -223,7 +223,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
             'default': ([0], range(7), [3]), 
             'none': (range(18), range(8), range(5)), 
             }['none']
-            pts_filename= self.root_path / (pts_filename.split('./data/nuscenes/')[-1])
+            pts_filename= self.root_path / (pts_filename.split('./data/byounghun/')[-1])
             # raw_points = RadarPointCloud.from_file(str(pts_filename)).points.T
             raw_points = RadarPointCloud.from_file(str(pts_filename),invalid_states,dynprop_states,ambig_states).points.T
             xyz = raw_points[:, :3]
@@ -432,8 +432,8 @@ def create_nuscenes_info(version, data_path, save_path, max_sweeps=10, with_cam=
     from nuscenes.nuscenes import NuScenes
     from nuscenes.utils import splits
     from . import nuscenes_utils
-    data_path = data_path / version
-    save_path = save_path / version
+    # data_path = data_path / version
+    # save_path = save_path / version
 
     assert version in ['v1.0-trainval', 'v1.0-test', 'v1.0-mini']
     if version == 'v1.0-trainval':
@@ -492,17 +492,17 @@ if __name__ == '__main__':
         dataset_cfg = EasyDict(yaml.safe_load(open(args.cfg_file)))
         ROOT_DIR = (Path(__file__).resolve().parent / '../../../').resolve()
         dataset_cfg.VERSION = args.version
-        create_nuscenes_info(
-            version=dataset_cfg.VERSION,
-            data_path=ROOT_DIR / 'data' / 'nuscenes',
-            save_path=ROOT_DIR / 'data' / 'nuscenes',
-            max_sweeps=dataset_cfg.MAX_SWEEPS,
-            with_cam=args.with_cam
-        )
+        # create_nuscenes_info(
+        #     version=dataset_cfg.VERSION,
+        #     data_path=ROOT_DIR / 'data' / 'byounghun',
+        #     save_path=ROOT_DIR / 'data' / 'byounghun',
+        #     max_sweeps=dataset_cfg.MAX_SWEEPS,
+        #     with_cam=args.with_cam
+        # )
 
         nuscenes_dataset = NuScenesDataset(
             dataset_cfg=dataset_cfg, class_names=None,
-            root_path=ROOT_DIR / 'data' / 'nuscenes',
+            root_path=ROOT_DIR / 'data' / 'byounghun',
             logger=common_utils.create_logger(), training=True
         )
         # nuscenes_dataset.create_groundtruth_database(max_sweeps=dataset_cfg.MAX_SWEEPS)

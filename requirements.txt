@@ -11,3 +11,4 @@ torchvision
 SharedArray==3.0.0
 opencv-python
 pyquaternion
+openpyxl

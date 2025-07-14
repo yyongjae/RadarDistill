@@ -1,5 +1,5 @@
 DATASET: 'NuScenesDataset_Distill'
-DATA_PATH: '../data/nuscenes'
+DATA_PATH: '../data/byounghun'
 
 VERSION: 'v1.0-trainval'
 MAX_SWEEPS: 10

@@ -30,6 +30,7 @@ class NuScenesDataset(DatasetTemplate):
         self.include_nuscenes_data(self.mode)
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
+            print(f"###### self.infos: {self.infos}")
 
     def include_nuscenes_data(self, mode):
         self.logger.info('Loading NuScenes dataset')
@@ -41,6 +42,8 @@ class NuScenesDataset(DatasetTemplate):
             with open(info_path, 'rb') as f:
                 infos = pickle.load(f)
                 nuscenes_infos.extend(infos)
+                
+
 
         self.infos.extend(nuscenes_infos)
         self.logger.info('Total samples for NuScenes dataset: %d' % (len(nuscenes_infos)))
@@ -87,7 +90,7 @@ class NuScenesDataset(DatasetTemplate):
             mask = ~((np.abs(points[:, 0]) < center_radius) & (np.abs(points[:, 1]) < center_radius))
             return points[mask]
 
-        lidar_path = self.root_path / sweep_info['lidar_path']
+        lidar_path = self.root_path.parent / sweep_info['lidar_path']
         points_sweep = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
         points_sweep = remove_ego_points(points_sweep).T
         if sweep_info['transform_matrix'] is not None:
@@ -100,7 +103,7 @@ class NuScenesDataset(DatasetTemplate):
 
     def get_lidar_with_sweeps(self, index, max_sweeps=1):
         info = self.infos[index]
-        lidar_path = self.root_path / info['lidar_path']
+        lidar_path = self.root_path.parent / info['lidar_path']
         points = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
 
         sweep_points_list = [points]
@@ -230,7 +233,7 @@ class NuScenesDataset(DatasetTemplate):
             'default': ([0], range(7), [3]), 
             'none': (range(18), range(8), range(5)), 
             }['none']
-            pts_filename= self.root_path / (pts_filename.split('./data/nuscenes/')[-1])
+            pts_filename= self.root_path / (pts_filename.split('./data/byounghun/')[-1])
             raw_points = RadarPointCloud.from_file(str(pts_filename),invalid_states,dynprop_states,ambig_states).points.T
             xyz = raw_points[:, :3]
             rcs = raw_points[:, 5].reshape(-1, 1)

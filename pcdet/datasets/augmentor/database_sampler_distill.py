@@ -23,7 +23,7 @@ class DataBaseSampler_Distill(object):
         self.use_shared_memory = sampler_cfg.get('USE_SHARED_MEMORY', False)
         
         for db_info_path in sampler_cfg.DB_INFO_PATH:
-            db_info_path = self.root_path.resolve() / db_info_path
+            db_info_path = self.root_path / db_info_path
             with open(str(db_info_path), 'rb') as f:
                 infos = pickle.load(f)
                 [self.db_infos[cur_class].extend(infos[cur_class]) for cur_class in class_names]
@@ -125,7 +125,6 @@ class DataBaseSampler_Distill(object):
         if pointer >= len(self.db_infos[class_name]):
             indices = np.random.permutation(len(self.db_infos[class_name]))
             pointer = 0
-
         sampled_dict = [self.db_infos[class_name][idx] for idx in indices[pointer: pointer + sample_num]]
         pointer += sample_num
         sample_group['pointer'] = pointer
@@ -236,22 +235,24 @@ class DataBaseSampler_Distill(object):
                 sample_group['sample_num'] = str(int(self.sample_class_num[class_name]) - num_gt)
             if int(sample_group['sample_num']) > 0:
                 sampled_dict = self.sample_with_fixed_number(class_name, sample_group)
+                box_list = [x['box3d_lidar'] for x in sampled_dict]
+                if len(box_list) > 0:
+                    sampled_boxes = np.stack(box_list, axis=0).astype(np.float32)
+                # sampled_boxes = np.stack([x['box3d_lidar'] for x in sampled_dict], axis=0).astype(np.float32)
 
-                sampled_boxes = np.stack([x['box3d_lidar'] for x in sampled_dict], axis=0).astype(np.float32)
+                    if self.sampler_cfg.get('DATABASE_WITH_FAKELIDAR', False):
+                        sampled_boxes = box_utils.boxes3d_kitti_fakelidar_to_lidar(sampled_boxes)
 
-                if self.sampler_cfg.get('DATABASE_WITH_FAKELIDAR', False):
-                    sampled_boxes = box_utils.boxes3d_kitti_fakelidar_to_lidar(sampled_boxes)
+                    iou1 = iou3d_nms_utils.boxes_bev_iou_cpu(sampled_boxes[:, 0:7], existed_boxes[:, 0:7])
+                    iou2 = iou3d_nms_utils.boxes_bev_iou_cpu(sampled_boxes[:, 0:7], sampled_boxes[:, 0:7])
+                    iou2[range(sampled_boxes.shape[0]), range(sampled_boxes.shape[0])] = 0
+                    iou1 = iou1 if iou1.shape[1] > 0 else iou2
+                    valid_mask = ((iou1.max(axis=1) + iou2.max(axis=1)) == 0).nonzero()[0]
+                    valid_sampled_dict = [sampled_dict[x] for x in valid_mask]
+                    valid_sampled_boxes = sampled_boxes[valid_mask]
 
-                iou1 = iou3d_nms_utils.boxes_bev_iou_cpu(sampled_boxes[:, 0:7], existed_boxes[:, 0:7])
-                iou2 = iou3d_nms_utils.boxes_bev_iou_cpu(sampled_boxes[:, 0:7], sampled_boxes[:, 0:7])
-                iou2[range(sampled_boxes.shape[0]), range(sampled_boxes.shape[0])] = 0
-                iou1 = iou1 if iou1.shape[1] > 0 else iou2
-                valid_mask = ((iou1.max(axis=1) + iou2.max(axis=1)) == 0).nonzero()[0]
-                valid_sampled_dict = [sampled_dict[x] for x in valid_mask]
-                valid_sampled_boxes = sampled_boxes[valid_mask]
-
-                existed_boxes = np.concatenate((existed_boxes, valid_sampled_boxes), axis=0)
-                total_valid_sampled_dict.extend(valid_sampled_dict)
+                    existed_boxes = np.concatenate((existed_boxes, valid_sampled_boxes), axis=0)
+                    total_valid_sampled_dict.extend(valid_sampled_dict)
 
         sampled_gt_boxes = existed_boxes[gt_boxes.shape[0]:, :]
         if total_valid_sampled_dict.__len__() > 0:

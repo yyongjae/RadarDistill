@@ -1,5 +1,5 @@
 DATASET: 'NuScenesDataset_Distill'
-DATA_PATH: '../data/byounghun'
+DATA_PATH: '/home/yongjae/4drkd/RadarDistill/data/yongjae'
 
 VERSION: 'v1.0-trainval'
 MAX_SWEEPS: 10
@@ -19,10 +19,13 @@ INFO_PATH: {
 
 POINT_CLOUD_RANGE: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
 
-BALANCED_RESAMPLING: True 
+
+# 1개 만들시 False
+BALANCED_RESAMPLING: False 
 
 DATA_AUGMENTOR:
     DISABLE_AUG_LIST: ['placeholder']
+    
     AUG_CONFIG_LIST:
         - NAME: gt_sampling_distill
           DB_INFO_PATH:

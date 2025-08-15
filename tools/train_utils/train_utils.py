@@ -7,6 +7,8 @@ import glob
 from torch.nn.utils import clip_grad_norm_
 from pcdet.utils import common_utils, commu_utils
 
+import wandb
+from eval_utils import eval_utils
 
 def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, accumulated_iter, optim_cfg,
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False, 
@@ -16,7 +18,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         dataloader_iter = iter(train_loader)
 
     ckpt_save_cnt = 1
-    start_it = accumulated_iter % total_it_each_epoch
+    start_it = accumulated_iter % max(total_it_each_epoch, 1)  # Prevent division by zero
 
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp, init_scale=optim_cfg.get('LOSS_SCALE_FP16', 2.0**16))
     
@@ -47,7 +49,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
             cur_lr = optimizer.param_groups[0]['lr']
 
         if tb_log is not None:
-            tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
+            tb_log.add_scalar('meta/learning_rate', cur_lr, accumulated_iter)
 
         model.train()
         optimizer.zero_grad()
@@ -128,10 +130,16 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
 
             if tb_log is not None:
                 tb_log.add_scalar('train/loss', loss, accumulated_iter)
-                tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
+                tb_log.add_scalar('meta/learning_rate', cur_lr, accumulated_iter)
                 for key, val in tb_dict.items():
                     tb_log.add_scalar('train/' + key, val, accumulated_iter)
-            
+                
+                ## wandb 추가
+                log_dict = {'train/loss': loss.item(), 'meta/learning_rate': cur_lr}
+                for k, v in tb_dict.items():
+                    log_dict[f'train/{k}'] = v
+                # wandb.log(log_dict, step=accumulated_iter)
+
             # save intermediate ckpt every {ckpt_save_time_interval} seconds         
             time_past_this_epoch = pbar.format_dict['elapsed']
             if time_past_this_epoch // ckpt_save_time_interval >= ckpt_save_cnt:
@@ -147,11 +155,11 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
     return accumulated_iter
 
 
-def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_cfg,
+def train_model(args, model, optimizer, train_loader, model_func, lr_scheduler, optim_cfg,
                 start_epoch, total_epochs, start_iter, rank, tb_log, ckpt_save_dir, train_sampler=None,
                 lr_warmup_scheduler=None, ckpt_save_interval=1, max_ckpt_save_num=50,
                 merge_all_iters_to_one_epoch=False, use_amp=False,
-                use_logger_to_record=False, logger=None, logger_iter_interval=None, ckpt_save_time_interval=None, show_gpu_stat=False, cfg=None):
+                use_logger_to_record=False, logger=None, logger_iter_interval=None, ckpt_save_time_interval=None, show_gpu_stat=False, cfg=None, val_loader=None):
     accumulated_iter = start_iter
 
     # use for disable data augmentation hook
@@ -210,6 +218,37 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                     checkpoint_state(model, optimizer, trained_epoch, accumulated_iter), filename=ckpt_name,
                 )
 
+                ###### validation ######
+                if val_loader is not None:
+                    logger.info('**********************Start validation for epoch %d**********************' % trained_epoch)
+                    
+                    eval_dir = ckpt_save_dir.parent / 'val_per_epoch' / f'epoch_{trained_epoch}'
+                    eval_dir.mkdir(parents=True, exist_ok=True)
+                    
+                    with torch.no_grad():
+                        val_ret_dict = eval_utils.eval_one_epoch(
+                            cfg,
+                            args,
+                            model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model,
+                            val_loader, 
+                            trained_epoch, 
+                            logger, 
+                            dist_test=False,
+                            result_dir=eval_dir
+                        )
+                    
+                    if rank == 0 and val_ret_dict:
+                        for key, val in val_ret_dict.items():
+                            if tb_log is not None:
+                                tb_log.add_scalar(f'val/{key}', val, trained_epoch)
+                            # Log to wandb
+                            # wandb.log({f'val/{key}': val, 'epoch': trained_epoch})
+                        
+                        logger.info('Validation results for epoch %d:' % trained_epoch)
+                        for key, val in val_ret_dict.items():
+                            logger.info(f'  {key}: {val:.4f}')
+                    
+                    logger.info('**********************End validation for epoch %d**********************' % trained_epoch)
 
 def model_state_to_cpu(model_state):
     model_state_cpu = type(model_state)()  # ordered dict

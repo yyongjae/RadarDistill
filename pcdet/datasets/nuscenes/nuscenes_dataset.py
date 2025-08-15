@@ -30,7 +30,6 @@ class NuScenesDataset(DatasetTemplate):
         self.include_nuscenes_data(self.mode)
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
-            print(f"###### self.infos: {self.infos}")
 
     def include_nuscenes_data(self, mode):
         self.logger.info('Loading NuScenes dataset')
@@ -233,7 +232,7 @@ class NuScenesDataset(DatasetTemplate):
             'default': ([0], range(7), [3]), 
             'none': (range(18), range(8), range(5)), 
             }['none']
-            pts_filename= self.root_path / (pts_filename.split('./data/byounghun/')[-1])
+            pts_filename= self.root_path / (pts_filename.split('./data/yongjae/')[-1])
             raw_points = RadarPointCloud.from_file(str(pts_filename),invalid_states,dynprop_states,ambig_states).points.T
             xyz = raw_points[:, :3]
             rcs = raw_points[:, 5].reshape(-1, 1)
@@ -426,8 +425,8 @@ class NuScenesDataset(DatasetTemplate):
             
     def create_groundtruth_database_w_radar(self, used_classes=None, max_sweeps=10):
             import torch
-            database_save_path = self.root_path / f'gt_database_{max_sweeps}sweeps_with_radar_withvelo'
-            db_info_save_path = self.root_path / f'nuscenes_dbinfos_{max_sweeps}sweeps_with_radar_withvelo.pkl'
+            database_save_path = self.root_path / f'gt_database_{max_sweeps}sweeps_with_radar_withvelo_single'
+            db_info_save_path = self.root_path / f'nuscenes_dbinfos_{max_sweeps}sweeps_with_radar_withvelo_single.pkl'
 
             database_save_path.mkdir(parents=True, exist_ok=True)
             all_db_infos = {}
@@ -489,12 +488,13 @@ class NuScenesDataset(DatasetTemplate):
                             all_db_infos[gt_names[idx]].append(db_info)
                         else:
                             all_db_infos[gt_names[idx]] = [db_info]
+            for cls in classes:
+                all_db_infos.setdefault(cls, [])
             for k, v in all_db_infos.items():
                 print('Database %s: %d' % (k, len(v)))
 
             with open(db_info_save_path, 'wb') as f:
                 pickle.dump(all_db_infos, f)
-
 
 def create_nuscenes_info(version, data_path, save_path, max_sweeps=10, with_cam=False):
     from nuscenes.nuscenes import NuScenes

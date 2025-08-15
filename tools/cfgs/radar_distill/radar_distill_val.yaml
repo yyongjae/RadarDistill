@@ -9,7 +9,7 @@ DATA_CONFIG:
     'train': [nuscenes_infos_6radar_10sweeps_train.pkl],
     'test': [nuscenes_infos_6radar_10sweeps_val.pkl],
     }
-    BALANCED_RESAMPLING: True
+    BALANCED_RESAMPLING: False
     DATA_AUGMENTOR:
         DISABLE_AUG_LIST: ['placeholder']
         AUG_CONFIG_LIST:

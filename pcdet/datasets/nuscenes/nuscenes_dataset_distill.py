@@ -65,7 +65,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         sampled_infos = []
 
         frac = 1.0 / len(self.class_names)
-        ratios = [frac / v for v in cls_dist.values()]
+        ratios = [frac / max(v, 1) for v in cls_dist.values()]
 
         for cur_cls_infos, ratio in zip(list(cls_infos.values()), ratios):
             sampled_infos += np.random.choice(
@@ -79,7 +79,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
                 if name in self.class_names:
                     cls_infos_new[name].append(info)
 
-        cls_dist_new = {k: len(v) / len(sampled_infos) for k, v in cls_infos_new.items()}
+        cls_dist_new = {k: len(v) / max(len(sampled_infos), 1) for k, v in cls_infos_new.items()}
 
         return sampled_infos
 
@@ -223,7 +223,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
             'default': ([0], range(7), [3]), 
             'none': (range(18), range(8), range(5)), 
             }['none']
-            pts_filename= self.root_path / (pts_filename.split('./data/byounghun/')[-1])
+            pts_filename= self.root_path / (pts_filename.split('./data/yongjae/')[-1])
             # raw_points = RadarPointCloud.from_file(str(pts_filename)).points.T
             raw_points = RadarPointCloud.from_file(str(pts_filename),invalid_states,dynprop_states,ambig_states).points.T
             xyz = raw_points[:, :3]
@@ -357,7 +357,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
 
         eval_set_map = {
             'v1.0-mini': 'mini_val',
-            'v1.0-trainval': 'val',
+            'v1.0-trainval': 'train',
             'v1.0-test': 'test'
         }
         try:
@@ -388,6 +388,10 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
 
         database_save_path = self.root_path / f'gt_database_{max_sweeps}sweeps_withvelo'
         db_info_save_path = self.root_path / f'nuscenes_dbinfos_{max_sweeps}sweeps_withvelo.pkl'
+
+
+        # database_save_path = self.root_path / f'gt_database_{max_sweeps}sweeps_withvelo_single'
+        # db_info_save_path = self.root_path / f'nuscenes_dbinfos_{max_sweeps}sweeps_withvelo_single.pkl'
 
         database_save_path.mkdir(parents=True, exist_ok=True)
         all_db_infos = {}
@@ -469,9 +473,9 @@ def create_nuscenes_info(version, data_path, save_path, max_sweeps=10, with_cam=
             pickle.dump(train_nusc_infos, f)
     else:
         print('train sample: %d, val sample: %d' % (len(train_nusc_infos), len(val_nusc_infos)))
-        with open(save_path / f'nuscenes_infos_6radar_{max_sweeps}sweeps_train.pkl', 'wb') as f:
+        with open(save_path / f'nuscenes_infos_6radar_{max_sweeps}sweeps_train_single.pkl', 'wb') as f:
             pickle.dump(train_nusc_infos, f)
-        with open(save_path / f'nuscenes_infos_6radar_{max_sweeps}sweeps_val.pkl', 'wb') as f:
+        with open(save_path / f'nuscenes_infos_6radar_{max_sweeps}sweeps_val_single.pkl', 'wb') as f:
             pickle.dump(val_nusc_infos, f)
 
 
@@ -492,18 +496,43 @@ if __name__ == '__main__':
         dataset_cfg = EasyDict(yaml.safe_load(open(args.cfg_file)))
         ROOT_DIR = (Path(__file__).resolve().parent / '../../../').resolve()
         dataset_cfg.VERSION = args.version
+
         # create_nuscenes_info(
         #     version=dataset_cfg.VERSION,
-        #     data_path=ROOT_DIR / 'data' / 'byounghun',
-        #     save_path=ROOT_DIR / 'data' / 'byounghun',
+        #     data_path=ROOT_DIR / 'data' / 'yongjae' / dataset_cfg.VERSION,
+        #     save_path=ROOT_DIR / 'data' / 'yongjae' / dataset_cfg.VERSION,
         #     max_sweeps=dataset_cfg.MAX_SWEEPS,
         #     with_cam=args.with_cam
         # )
+        
 
         nuscenes_dataset = NuScenesDataset(
             dataset_cfg=dataset_cfg, class_names=None,
-            root_path=ROOT_DIR / 'data' / 'byounghun',
-            logger=common_utils.create_logger(), training=True
+            root_path=ROOT_DIR / 'data' / 'yongjae',
+            logger=common_utils.create_logger(log_level='INFO'), training=True
         )
+        import sys
+        single=True
+        index=0
+        if single:
+            single_info = copy.deepcopy(nuscenes_dataset.infos[index])
+            val_single_info = copy.deepcopy(nuscenes_dataset.infos[index])
+
+            one_pkl = ROOT_DIR / 'data' / 'yongjae/v1.0-trainval' / f'nuscenes_infos_6radar_10sweeps_train_single.pkl'
+            one_val_pkl = ROOT_DIR / 'data' / 'yongjae/v1.0-trainval' / f'nuscenes_infos_6radar_10sweeps_val_single.pkl'
+            print(one_pkl)
+            with open(one_pkl, 'wb') as f:
+                pickle.dump([single_info], f, protocol=pickle.HIGHEST_PROTOCOL)
+            with open(one_val_pkl, 'wb') as f:
+                pickle.dump([val_single_info], f, protocol=pickle.HIGHEST_PROTOCOL)
+
+            print(f'✅ 1‑sample pkl saved to: {one_pkl, one_val_pkl}')
+
+            nuscenes_dataset.infos = [single_info]          # ← 리스트 길이 1로 축소
+            nuscenes_dataset.create_groundtruth_database_w_radar()
+            sys.exit(0)   # 더 진행하지 않고 종료
+
+
+        
         # nuscenes_dataset.create_groundtruth_database(max_sweeps=dataset_cfg.MAX_SWEEPS)
-        nuscenes_dataset.create_groundtruth_database_w_radar(max_sweeps=dataset_cfg.MAX_SWEEPS)
+        # nuscenes_dataset.create_groundtruth_database_w_radar(max_sweeps=dataset_cfg.MAX_SWEEPS)

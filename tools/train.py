@@ -182,16 +182,20 @@ def main():
         last_epoch=last_epoch, optim_cfg=cfg.OPTIMIZATION
     )
     # --------------------wandb init----------------------#
-    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    name=cfg.TAG + "_" + args.extra_tag + "_" + current_time
-    wandb.init(
-        project="radardistill",
-        name=name,
-        dir=os.path.join('../outputs/', cfg.EXP_GROUP_PATH),
-        entity="4DR_siu",
-        config=vars(cfg)
-    )
-    wandb.config.update(vars(args), allow_val_change=True)  
+    if cfg.LOCAL_RANK == 0:
+        current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        name=cfg.TAG + "_" + args.extra_tag + "_" + current_time
+        wandb.init(
+            project="radardistill",
+            name=name,
+            dir=os.path.join('../outputs/', cfg.EXP_GROUP_PATH),
+            entity="4DR_siu",
+            config=vars(cfg)
+        )
+        wandb.config.update(vars(args), allow_val_change=True)
+    else:
+        # Disable wandb for non-zero ranks
+        os.environ['WANDB_SILENT'] = 'true'  
 
 
 

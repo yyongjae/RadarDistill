@@ -138,7 +138,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
                 log_dict = {'train/loss': loss.item(), 'meta/learning_rate': cur_lr}
                 for k, v in tb_dict.items():
                     log_dict[f'train/{k}'] = v
-                # wandb.log(log_dict, step=accumulated_iter)
+                wandb.log(log_dict, step=accumulated_iter)
 
             # save intermediate ckpt every {ckpt_save_time_interval} seconds         
             time_past_this_epoch = pbar.format_dict['elapsed']
@@ -218,37 +218,37 @@ def train_model(args, model, optimizer, train_loader, model_func, lr_scheduler, 
                     checkpoint_state(model, optimizer, trained_epoch, accumulated_iter), filename=ckpt_name,
                 )
 
-                ###### validation ######
-                if val_loader is not None:
-                    logger.info('**********************Start validation for epoch %d**********************' % trained_epoch)
+                # ###### validation ######
+                # if val_loader is not None:
+                #     logger.info('**********************Start validation for epoch %d**********************' % trained_epoch)
                     
-                    eval_dir = ckpt_save_dir.parent / 'val_per_epoch' / f'epoch_{trained_epoch}'
-                    eval_dir.mkdir(parents=True, exist_ok=True)
+                #     eval_dir = ckpt_save_dir.parent / 'val_per_epoch' / f'epoch_{trained_epoch}'
+                #     eval_dir.mkdir(parents=True, exist_ok=True)
                     
-                    with torch.no_grad():
-                        val_ret_dict = eval_utils.eval_one_epoch(
-                            cfg,
-                            args,
-                            model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model,
-                            val_loader, 
-                            trained_epoch, 
-                            logger, 
-                            dist_test=False,
-                            result_dir=eval_dir
-                        )
+                #     with torch.no_grad():
+                #         val_ret_dict = eval_utils.eval_one_epoch(
+                #             cfg,
+                #             args,
+                #             model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model,
+                #             val_loader, 
+                #             trained_epoch, 
+                #             logger, 
+                #             dist_test=False,
+                #             result_dir=eval_dir
+                #         )
                     
-                    if rank == 0 and val_ret_dict:
-                        for key, val in val_ret_dict.items():
-                            if tb_log is not None:
-                                tb_log.add_scalar(f'val/{key}', val, trained_epoch)
-                            # Log to wandb
-                            # wandb.log({f'val/{key}': val, 'epoch': trained_epoch})
+                #     if rank == 0 and val_ret_dict:
+                #         for key, val in val_ret_dict.items():
+                #             if tb_log is not None:
+                #                 tb_log.add_scalar(f'val/{key}', val, trained_epoch)
+                #             # Log to wandb
+                #             # wandb.log({f'val/{key}': val, 'epoch': trained_epoch})
                         
-                        logger.info('Validation results for epoch %d:' % trained_epoch)
-                        for key, val in val_ret_dict.items():
-                            logger.info(f'  {key}: {val:.4f}')
+                #         logger.info('Validation results for epoch %d:' % trained_epoch)
+                #         for key, val in val_ret_dict.items():
+                #             logger.info(f'  {key}: {val:.4f}')
                     
-                    logger.info('**********************End validation for epoch %d**********************' % trained_epoch)
+                #     logger.info('**********************End validation for epoch %d**********************' % trained_epoch)
 
 def model_state_to_cpu(model_state):
     model_state_cpu = type(model_state)()  # ordered dict

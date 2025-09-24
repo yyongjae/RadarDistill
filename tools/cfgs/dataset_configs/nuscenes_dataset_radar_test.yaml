@@ -1,4 +1,4 @@
-DATASET: 'NuScenesDataset_Distill'
+DATASET: 'NuScenesDataset_radar_test'
 DATA_PATH: '/home/yongjae/4drkd/RadarDistill/data/yongjae'
 
 VERSION: 'v1.0-test'

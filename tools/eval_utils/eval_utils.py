@@ -24,7 +24,7 @@ def statistics_info(cfg, ret_dict, metric, disp_dict):
         '(%d, %d) / %d' % (metric['recall_roi_%s' % str(min_thresh)], metric['recall_rcnn_%s' % str(min_thresh)], metric['gt_num'])
 
 
-def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=False, result_dir=None):
+def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=False, result_dir=None, bev_similarity_engines=None):
     result_dir.mkdir(parents=True, exist_ok=True)
 
     final_output_dir = result_dir / 'final_result' / 'data'
@@ -91,6 +91,11 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
 
 
         statistics_info(cfg, ret_dict, metric, disp_dict)
+        # Process with similarity engines if provided
+        if bev_similarity_engines is not None:
+            for engine in bev_similarity_engines:
+                engine.process_batch(batch_dict)
+
         annos = dataset.generate_prediction_dicts(
             batch_dict, pred_dicts, class_names,
             output_path=final_output_dir if args.save_to_file else None

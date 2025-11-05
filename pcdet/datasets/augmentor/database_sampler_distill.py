@@ -47,6 +47,15 @@ class DataBaseSampler_Distill(object):
                 'indices': np.arange(len(self.db_infos[class_name]))
             }
 
+        self._debug_log_count = 0
+        if self.logger is not None:
+            try:
+                sn = self.sampler_cfg.get('SAMPLE_N_SWEEPS', None)
+                ts_idx = self.sampler_cfg.get('TIMESTAMP_IDX', -1)
+                self.logger.info(f'DB Sampler init: SAMPLE_N_SWEEPS={sn}, TIMESTAMP_IDX={ts_idx}, NUM_POINT_FEATURES={self.sampler_cfg.NUM_POINT_FEATURES}')
+            except Exception:
+                pass
+
     def __getstate__(self):
         d = dict(self.__dict__)
         del d['logger']
@@ -185,6 +194,36 @@ class DataBaseSampler_Distill(object):
                 obj_radar_points = np.fromfile(str(radar_file_path), dtype=np.float32).reshape(
                     [-1, 6])
 
+            # sweep 몇 개 가져갈건지
+            keep_k = self.sampler_cfg.get('SAMPLE_N_SWEEPS', None)
+            if keep_k is not None and obj_points.shape[1] >= 5:
+                try:
+                    k = int(keep_k)
+                    ts_idx = self.sampler_cfg.get('TIMESTAMP_IDX', -1)  # default: last column
+                    decimals = 2 
+                    try:
+                        times = obj_points[:, ts_idx]
+                    except Exception:
+                        times = obj_points[:, -1]
+                    times_r = np.round(times, decimals)
+                    unique_times = np.sort(np.unique(times_r))
+                    if unique_times.size > 0:
+                        thr = unique_times[min(k - 1, unique_times.size - 1)]
+                        time_mask = times_r <= thr
+                        obj_points = obj_points[time_mask]
+                except Exception:
+                    # Gracefully skip filtering on any unexpected error
+                    pass
+
+            # Optional: filter by explicit time range if provided (fallback behavior)
+            if self.sampler_cfg.get('FILTER_OBJ_POINTS_BY_TIMESTAMP', False) and obj_points.shape[1] >= 5:
+                time_range = self.sampler_cfg.get('TIME_RANGE', None)
+                if isinstance(time_range, (list, tuple)) and len(time_range) == 2:
+                    min_time, max_time = float(time_range[0]), float(time_range[1])
+                    times = obj_points[:, -1]
+                    time_mask = (times <= max_time + 1e-6) & (times >= min_time - 1e-6)
+                    obj_points = obj_points[time_mask]
+
             obj_points[:, :3] += info['box3d_lidar'][:3]
             obj_radar_points[:, :3] += info['box3d_lidar'][:3]
 
@@ -199,6 +238,13 @@ class DataBaseSampler_Distill(object):
 
         obj_points = np.concatenate(obj_points_list, axis=0)
         obj_radar_points = np.concatenate(obj_radar_points_list, axis=0)
+        if self.logger is not None and self._debug_log_count < 3:
+            try:
+                times_u = np.unique(np.round(obj_points[:, -1], 2))
+                self.logger.info(f'DB Sampler: concatenated obj_points shape={obj_points.shape}, unique_times={times_u[:10]}')
+            except Exception:
+                self.logger.info(f'DB Sampler: concatenated obj_points shape={obj_points.shape}')
+            self._debug_log_count += 1
         sampled_gt_names = np.array([x['name'] for x in total_valid_sampled_dict])
 
         large_sampled_gt_boxes = box_utils.enlarge_box3d(
@@ -235,24 +281,22 @@ class DataBaseSampler_Distill(object):
                 sample_group['sample_num'] = str(int(self.sample_class_num[class_name]) - num_gt)
             if int(sample_group['sample_num']) > 0:
                 sampled_dict = self.sample_with_fixed_number(class_name, sample_group)
-                box_list = [x['box3d_lidar'] for x in sampled_dict]
-                if len(box_list) > 0:
-                    sampled_boxes = np.stack(box_list, axis=0).astype(np.float32)
-                # sampled_boxes = np.stack([x['box3d_lidar'] for x in sampled_dict], axis=0).astype(np.float32)
 
-                    if self.sampler_cfg.get('DATABASE_WITH_FAKELIDAR', False):
-                        sampled_boxes = box_utils.boxes3d_kitti_fakelidar_to_lidar(sampled_boxes)
+                sampled_boxes = np.stack([x['box3d_lidar'] for x in sampled_dict], axis=0).astype(np.float32)
 
-                    iou1 = iou3d_nms_utils.boxes_bev_iou_cpu(sampled_boxes[:, 0:7], existed_boxes[:, 0:7])
-                    iou2 = iou3d_nms_utils.boxes_bev_iou_cpu(sampled_boxes[:, 0:7], sampled_boxes[:, 0:7])
-                    iou2[range(sampled_boxes.shape[0]), range(sampled_boxes.shape[0])] = 0
-                    iou1 = iou1 if iou1.shape[1] > 0 else iou2
-                    valid_mask = ((iou1.max(axis=1) + iou2.max(axis=1)) == 0).nonzero()[0]
-                    valid_sampled_dict = [sampled_dict[x] for x in valid_mask]
-                    valid_sampled_boxes = sampled_boxes[valid_mask]
+                if self.sampler_cfg.get('DATABASE_WITH_FAKELIDAR', False):
+                    sampled_boxes = box_utils.boxes3d_kitti_fakelidar_to_lidar(sampled_boxes)
 
-                    existed_boxes = np.concatenate((existed_boxes, valid_sampled_boxes), axis=0)
-                    total_valid_sampled_dict.extend(valid_sampled_dict)
+                iou1 = iou3d_nms_utils.boxes_bev_iou_cpu(sampled_boxes[:, 0:7], existed_boxes[:, 0:7])
+                iou2 = iou3d_nms_utils.boxes_bev_iou_cpu(sampled_boxes[:, 0:7], sampled_boxes[:, 0:7])
+                iou2[range(sampled_boxes.shape[0]), range(sampled_boxes.shape[0])] = 0
+                iou1 = iou1 if iou1.shape[1] > 0 else iou2
+                valid_mask = ((iou1.max(axis=1) + iou2.max(axis=1)) == 0).nonzero()[0]
+                valid_sampled_dict = [sampled_dict[x] for x in valid_mask]
+                valid_sampled_boxes = sampled_boxes[valid_mask]
+
+                existed_boxes = np.concatenate((existed_boxes, valid_sampled_boxes), axis=0)
+                total_valid_sampled_dict.extend(valid_sampled_dict)
 
         sampled_gt_boxes = existed_boxes[gt_boxes.shape[0]:, :]
         if total_valid_sampled_dict.__len__() > 0:

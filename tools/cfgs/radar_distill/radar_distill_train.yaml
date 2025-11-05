@@ -5,20 +5,23 @@ DATA_CONFIG:
     _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset_distill.yaml
     POINT_CLOUD_RANGE: [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
     INFO_PATH: {
-    'train': [nuscenes_infos_6radar_10sweeps_train_single.pkl],
-    'test': [nuscenes_infos_6radar_10sweeps_val_single.pkl],
+    # 'train': [nuscenes_infos_6radar_10sweeps_train_single.pkl],
+    # 'test': [nuscenes_infos_6radar_10sweeps_val_single.pkl],
     
-    # 'train': [nuscenes_infos_6radar_10sweeps_train.pkl],
-    # 'test': [nuscenes_infos_6radar_10sweeps_val.pkl],
+    'train': [nuscenes_infos_6radar_10sweeps_train.pkl],
+    'test': [nuscenes_infos_6radar_10sweeps_val.pkl],
     }
     BALANCED_RESAMPLING: False
     DATA_AUGMENTOR:
         DISABLE_AUG_LIST: ['placeholder']
         AUG_CONFIG_LIST:
             - NAME: gt_sampling_distill
+              SAMPLE_N_SWEEPS: 1
+              TIMESTAMP_IDX: -1
+              LIDAR_MAX_SWEEPS: 1
               DB_INFO_PATH:
-                - nuscenes_dbinfos_10sweeps_with_radar_withvelo_single.pkl
-                # - nuscenes_dbinfos_10sweeps_with_radar_withvelo.pkl
+                # - nuscenes_dbinfos_10sweeps_with_radar_withvelo_single.pkl
+                - nuscenes_dbinfos_10sweeps_with_radar_withvelo.pkl
               PREPARE: {
                 filter_by_min_points: [
                     'car:5','truck:5', 'construction_vehicle:5', 'bus:5', 'trailer:5',

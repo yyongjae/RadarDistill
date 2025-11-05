@@ -28,8 +28,12 @@ DATA_AUGMENTOR:
     
     AUG_CONFIG_LIST:
         - NAME: gt_sampling_distill
+        ## SWEEP 몇 개 가져갈건지 
+          SAMPLE_N_SWEEPS: 1
+          TIMESTAMP_IDX: -1
+          LIDAR_MAX_SWEEPS: 1
           DB_INFO_PATH:
-              - nuscenes_dbinfos_10sweeps_with_radar_withvelo.pkl
+              - nuscenes_dbinfos_10sweeps_with_radar_withvelo_single.pkl
           PREPARE: {
              filter_by_min_points: [
                  'car:5','truck:5', 'construction_vehicle:5', 'bus:5', 'trailer:5',

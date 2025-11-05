@@ -32,24 +32,6 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
 
-        self._debug_log_count = 0
-        cfg_lidar_max = getattr(self.dataset_cfg, 'LIDAR_MAX_SWEEPS', None)
-        cfg_sample_n_sweeps = None
-        try:
-            aug_list = getattr(self.dataset_cfg.DATA_AUGMENTOR, 'AUG_CONFIG_LIST', [])
-            for cur_cfg in aug_list:
-                name = getattr(cur_cfg, 'NAME', None)
-                if name == 'gt_sampling_distill':
-                    cfg_sample_n_sweeps = cur_cfg.get('SAMPLE_N_SWEEPS', None)
-                    break
-        except Exception:
-            pass
-        if self.logger is not None:
-            try:
-                self.logger.info(f'Dataset init: LIDAR_MAX_SWEEPS={cfg_lidar_max}, SAMPLE_N_SWEEPS={cfg_sample_n_sweeps}')
-            except Exception:
-                pass
-
     def include_nuscenes_data(self, mode):
         self.logger.info('Loading NuScenes dataset')
         nuscenes_infos = []
@@ -308,15 +290,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         info = copy.deepcopy(self.infos[index])
         
         radar_points = self.get_radar_with_sweeps(index, max_sweeps=6)
-        lidar_max = self.dataset_cfg.get('LIDAR_MAX_SWEEPS', 1)
-        points = self.get_lidar_with_sweeps(index, max_sweeps=int(lidar_max))
-        if self.logger is not None and self._debug_log_count < 3:
-            try:
-                times_u = np.unique(np.round(points[:, -1], 2))
-                self.logger.info(f'Dataset __getitem__: index={index}, lidar_max={int(lidar_max)}, points_shape={points.shape}, unique_times={times_u[:10]}')
-            except Exception:
-                self.logger.info(f'Dataset __getitem__: index={index}, lidar_max={int(lidar_max)}, points_shape={points.shape}')
-            self._debug_log_count += 1
+        points = self.get_lidar_with_sweeps(index, max_sweeps=10)
         
        
 

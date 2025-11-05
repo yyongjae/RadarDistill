@@ -1,7 +1,6 @@
 **__pycache__**
 **build**
 **egg-info**
-**dist**
 data/
 output/
 *.pyc
@@ -14,3 +13,4 @@ venv/
 *.bin
 output
 version.py
+*.npy

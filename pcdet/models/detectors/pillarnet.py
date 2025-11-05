@@ -65,9 +65,22 @@ class PillarNet(Detector3DTemplate):
     def get_training_distll_loss(self, batch_dict):
         disp_dict = {}
         
+        # loss_feature, tb_dict = self.radar_backbone_2d.get_loss(batch_dict)
+        # loss_rpn, _tb_dict = self.radar_dense_head.get_loss()
+        # tb_dict.update(_tb_dict)
+
+        # 1) Distillation loss
         loss_feature, tb_dict = self.radar_backbone_2d.get_loss(batch_dict)
-        loss_rpn, _tb_dict = self.radar_dense_head.get_loss()
-        tb_dict.update(_tb_dict)
+        tb_dict['distill_loss'] = loss_feature.item()
+
+        # 2) Detection head loss
+        loss_rpn, tb_dict_rpn = self.radar_dense_head.get_loss()
+        # 개별 rpn loss 항목(tb_dict_rpn: 'rpn_loss_cls','rpn_loss_loc','rpn_loss_dir','rpn_loss') 추가
+        tb_dict.update(tb_dict_rpn)
+
+        # 3) 총합(optional)
+        tb_dict['total_loss'] = loss_feature.item() + loss_rpn.item()
+
         loss = loss_feature + loss_rpn
         
         return loss, tb_dict, disp_dict

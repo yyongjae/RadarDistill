@@ -20,6 +20,7 @@ from .nuscenes.nuscenes_dataset_distill import NuScenesDataset_Distill
 from .dataset_distill import DatasetTemplate_Distill
 
 from .nuscenes.nuscenes_dataset_test import NuScenesDataset_radar_test
+from .nuscenes.nuscenes_dataset_distill_multi_sweep_teacher import NuScenesDataset_Distill_Multi_Sweep_Teacher
 
 __all__ = {
     'DatasetTemplate': DatasetTemplate,
@@ -35,6 +36,7 @@ __all__ = {
     'NuScenesDataset_Distill':NuScenesDataset_Distill,
     'DatasetTemplate_Distill' : DatasetTemplate_Distill,
     'NuScenesDataset_radar_test':NuScenesDataset_radar_test,
+    'NuScenesDataset_Distill_Multi_Sweep_Teacher':NuScenesDataset_Distill_Multi_Sweep_Teacher,
 }
 
 

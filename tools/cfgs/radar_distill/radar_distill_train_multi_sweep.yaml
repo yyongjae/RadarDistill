@@ -2,7 +2,7 @@ CLASS_NAMES: ['car','truck', 'construction_vehicle', 'bus', 'trailer',
               'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
 
 DATA_CONFIG:
-    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset_distill.yaml
+    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset_distill_multi_sweep_teacher.yaml
     POINT_CLOUD_RANGE: [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
     INFO_PATH: {
     'train': [nuscenes_infos_6radar_10sweeps_train.pkl],
@@ -59,7 +59,7 @@ DATA_CONFIG:
           VOXEL_SIZE: [0.075, 0.075, 0.2]
 
 MODEL:
-    NAME: PillarNet
+    NAME: PillarNet_Multi_Sweep_Teacher
     DISTILL : True
     FREEZE_PIPELINE: [DynamicPillarVFESimple2D,PillarRes18BackBone8x, BaseBEVBackboneV2, CenterHead]
 
@@ -95,7 +95,7 @@ MODEL:
       NUM_UPSAMPLE_FILTERS: [ 128, 128 ]
 
     RADAR_BACKBONE_2D:
-        NAME: Radar_Distill
+        NAME: Radar_Distill_Multi_Sweep_Teacher
         LAYER_NUMS: [5, 5]
         LAYER_STRIDES: [1,2]
         NUM_FILTERS: [ 256, 256 ]

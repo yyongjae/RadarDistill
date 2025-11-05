@@ -15,6 +15,7 @@ from .pillarnet import PillarNet
 from .voxelnext import VoxelNeXt
 from .transfusion import TransFusion
 from .bevfusion import BevFusion
+from .pillarnet_multi_sweep_teacher import PillarNet_Multi_Sweep_Teacher
 
 __all__ = {
     'Detector3DTemplate': Detector3DTemplate,
@@ -34,7 +35,8 @@ __all__ = {
     'TransFusion': TransFusion,
     'BevFusion': BevFusion,
     
-    'PillarNet':PillarNet
+    'PillarNet':PillarNet,
+    'PillarNet_Multi_Sweep_Teacher':PillarNet_Multi_Sweep_Teacher,
 }
 
 

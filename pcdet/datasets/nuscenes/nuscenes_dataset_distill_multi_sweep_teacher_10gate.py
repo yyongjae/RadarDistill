@@ -7,14 +7,16 @@ from tqdm import tqdm
 
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
 from ...utils import common_utils
-from ..dataset_distill import DatasetTemplate_Distill
+from ..dataset_distill_multi_sweep_teacher import DatasetTemplate_Distill_Multi_Sweep_Teacher
 from pyquaternion import Quaternion
 from PIL import Image
 from nuscenes.utils.data_classes import RadarPointCloud
 from .nuscenes_dataset import NuScenesDataset
+from collections import defaultdict
+import torch
 
 
-class NuScenesDataset_Distill(DatasetTemplate_Distill):
+class NuScenesDataset_Distill_Multi_Sweep_Teacher(DatasetTemplate_Distill_Multi_Sweep_Teacher):
     def __init__(self, dataset_cfg, class_names, training=True, root_path=None, logger=None):
         root_path = (root_path if root_path is not None else Path(dataset_cfg.DATA_PATH)) / dataset_cfg.VERSION
         super().__init__(
@@ -65,7 +67,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         sampled_infos = []
 
         frac = 1.0 / len(self.class_names)
-        ratios = [frac / max(v, 1) for v in cls_dist.values()]
+        ratios = [frac / v for v in cls_dist.values()]
 
         for cur_cls_infos, ratio in zip(list(cls_infos.values()), ratios):
             sampled_infos += np.random.choice(
@@ -79,7 +81,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
                 if name in self.class_names:
                     cls_infos_new[name].append(info)
 
-        cls_dist_new = {k: len(v) / max(len(sampled_infos), 1) for k, v in cls_infos_new.items()}
+        cls_dist_new = {k: len(v) / len(sampled_infos) for k, v in cls_infos_new.items()}
 
         return sampled_infos
 
@@ -88,7 +90,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
             mask = ~((np.abs(points[:, 0]) < center_radius) & (np.abs(points[:, 1]) < center_radius))
             return points[mask]
 
-        lidar_path = self.root_path.parent / sweep_info['lidar_path']
+        lidar_path = self.root_path / sweep_info['lidar_path']
         points_sweep = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
         points_sweep = remove_ego_points(points_sweep).T
         if sweep_info['transform_matrix'] is not None:
@@ -101,7 +103,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
 
     def get_lidar_with_sweeps(self, index, max_sweeps=1):
         info = self.infos[index]
-        lidar_path = self.root_path.parent / info['lidar_path']
+        lidar_path = self.root_path / info['lidar_path']
         points = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
 
         sweep_points_list = [points]
@@ -117,6 +119,37 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
 
         points = np.concatenate((points, times), axis=1)
         return points
+
+    # ---------------------------- [NEW] teacher sweep 누적 유틸 ----------------------------
+    def get_lidar_with_sweeps_in_order(self, index, max_sweeps=10):
+        """
+        현재 프레임 + |time_lag|가 작은 순으로 과거 스윕을 최대 max_sweeps-1개 누적.
+        반환: (N, 5)  ==  xyzi + time_lag
+        """
+        info = self.infos[index]
+
+        # 현재 프레임
+        lidar_path = self.root_path / info['lidar_path']
+        points = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
+        sweep_points_list = [points]
+        sweep_times_list  = [np.zeros((points.shape[0], 1), dtype=np.float32)]
+
+        # 과거 스윕: time_lag 절댓값 기준 오름차순 정렬 후 앞에서 max_sweeps-1개
+        sweeps = info['sweeps']
+        if max_sweeps > 1 and len(sweeps) > 0:
+            order = np.argsort(np.abs([s.get('time_lag', 0.0) for s in sweeps]))
+            picks = order[:min(max_sweeps - 1, len(sweeps))]
+            for k in picks:
+                pts_k, t_k = self.get_sweep(sweeps[k])  # get_sweep: ref 좌표로 변환 + time_lag 반환
+                sweep_points_list.append(pts_k.astype(np.float32))
+                sweep_times_list.append(t_k.astype(np.float32))
+
+        points = np.concatenate(sweep_points_list, axis=0).astype(np.float32)
+        times  = np.concatenate(sweep_times_list,  axis=0).astype(points.dtype)
+
+        points = np.concatenate((points, times), axis=1)  # (N,5)
+        return points
+    # ---------------------------------------------------------------------------------------
 
     def crop_image(self, input_dict):
         W, H = input_dict["ori_shape"]
@@ -277,6 +310,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         points = np.concatenate(points_sweep_list, axis=0)
         return points
 
+
     def __len__(self):
         if self._merge_all_iters_to_one_epoch:
             return len(self.infos) * self.total_epochs
@@ -290,35 +324,37 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         info = copy.deepcopy(self.infos[index])
         
         radar_points = self.get_radar_with_sweeps(index, max_sweeps=6)
-        points_s10 = self.get_lidar_with_sweeps(index, max_sweeps=10)
-        points_s9 = self.get_lidar_with_sweeps(index, max_sweeps=9)
-        points_s8 = self.get_lidar_with_sweeps(index, max_sweeps=8)
-        points_s7 = self.get_lidar_with_sweeps(index, max_sweeps=7)
-        points_s6 = self.get_lidar_with_sweeps(index, max_sweeps=6)
-        points_s5 = self.get_lidar_with_sweeps(index, max_sweeps=5)
-        points_s4 = self.get_lidar_with_sweeps(index, max_sweeps=4)
-        points_s3 = self.get_lidar_with_sweeps(index, max_sweeps=3)
-       
 
+        # ------------------------ [NEW] teacher 포인트(증강 전) 생성 ------------------------
+        tpts3  = self.get_lidar_with_sweeps_in_order(index, max_sweeps=3)
+        tpts4  = self.get_lidar_with_sweeps_in_order(index, max_sweeps=4)
+        tpts5  = self.get_lidar_with_sweeps_in_order(index, max_sweeps=5)
+        tpts6  = self.get_lidar_with_sweeps_in_order(index, max_sweeps=6)
+        tpts7  = self.get_lidar_with_sweeps_in_order(index, max_sweeps=7)
+        tpts8  = self.get_lidar_with_sweeps_in_order(index, max_sweeps=8)   # [N,4]
+        tpts9  = self.get_lidar_with_sweeps_in_order(index, max_sweeps=9)
+        tpts10 = self.get_lidar_with_sweeps_in_order(index, max_sweeps=10)
+        # -----------------------------------------------------------------------------------
+    
         input_dict = {
-            'points_s10': points_s10,
-            'points_s9': points_s9,
-            'points_s8': points_s8,
-            'points_s7': points_s7,
-            'points_s6': points_s6,
-            'points_s5': points_s5,
-            'points_s4': points_s4,
-            'points_s3': points_s3,
+            'teacher_points_s3':  tpts3,
+            'teacher_points_s4':  tpts4,
+            'teacher_points_s5':  tpts5,
+            'teacher_points_s6':  tpts6,
+            'teacher_points_s7':  tpts7,
+            'teacher_points_s8':  tpts8,
+            'teacher_points_s9':  tpts9,
+            'teacher_points_s10': tpts10,
             'radar_points': radar_points,
             'frame_id': Path(info['lidar_path']).stem,
-            'metadata': {'token': info['token']}
+            'metadata': {'token': info['token']},
         }
 
         if 'gt_boxes' in info:
-            # if self.dataset_cfg.get('FILTER_MIN_POINTS_IN_GT', False):
-            #     mask = ((info['num_lidar_pts'] > self.dataset_cfg.FILTER_MIN_POINTS_IN_GT - 1))
-            # else:
-            mask = None
+            if self.dataset_cfg.get('FILTER_MIN_POINTS_IN_GT', False):
+                mask = ((info['num_lidar_pts'] > self.dataset_cfg.FILTER_MIN_POINTS_IN_GT - 1))
+            else:
+                mask = None
 
             input_dict.update({
                 'gt_names': info['gt_names'] if mask is None else info['gt_names'][mask],
@@ -327,7 +363,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         if self.use_camera:
             input_dict = self.load_camera_info(input_dict, info)
 
-        data_dict = self.prepare_data(data_dict=input_dict)
+        data_dict = self.prepare_data_multi_sweep_teacher(data_dict=input_dict)
         
         if self.dataset_cfg.get('SET_NAN_VELOCITY_TO_ZEROS', False):
             gt_boxes = data_dict['gt_boxes']
@@ -339,6 +375,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
        
 
         return data_dict
+
 
     def evaluation(self, det_annos, class_names, **kwargs):
         import json
@@ -402,10 +439,6 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         database_save_path = self.root_path / f'gt_database_{max_sweeps}sweeps_withvelo'
         db_info_save_path = self.root_path / f'nuscenes_dbinfos_{max_sweeps}sweeps_withvelo.pkl'
 
-
-        # database_save_path = self.root_path / f'gt_database_{max_sweeps}sweeps_withvelo_single'
-        # db_info_save_path = self.root_path / f'nuscenes_dbinfos_{max_sweeps}sweeps_withvelo_single.pkl'
-
         database_save_path.mkdir(parents=True, exist_ok=True)
         all_db_infos = {}
 
@@ -443,6 +476,192 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
 
         with open(db_info_save_path, 'wb') as f:
             pickle.dump(all_db_infos, f)
+
+    def prepare_data_multi_sweep_teacher(self, data_dict):
+        """
+        Args:
+            data_dict:
+                points: optional, (N, 3 + C_in)
+                gt_boxes: optional, (N, 7 + C) [x, y, z, dx, dy, dz, heading, ...]
+                gt_names: optional, (N), string
+                ...
+
+        Returns:
+            data_dict:
+                frame_id: string
+                points: (N, 3 + C_in)
+                gt_boxes: optional, (N, 7 + C) [x, y, z, dx, dy, dz, heading, ...]
+                gt_names: optional, (N), string
+                use_lead_xyz: bool
+                voxels: optional (num_voxels, max_points_per_voxel, 3 + C)
+                voxel_coords: optional (num_voxels, 3)
+                voxel_num_points: optional (num_voxels)
+                ...
+        """
+        if self.training:
+            assert 'gt_boxes' in data_dict, 'gt_boxes should be provided for training'
+            gt_boxes_mask = np.array([n in self.class_names for n in data_dict['gt_names']], dtype=np.bool_)
+            
+            if 'calib' in data_dict:
+                calib = data_dict['calib']
+            data_dict = self.data_augmentor.forward(
+                data_dict={
+                    **data_dict,
+                    'gt_boxes_mask': gt_boxes_mask
+                }
+            )
+            if 'calib' in data_dict:
+                data_dict['calib'] = calib
+        data_dict = self.set_lidar_aug_matrix(data_dict)
+
+        if data_dict.get('gt_boxes', None) is not None:
+            selected = common_utils.keep_arrays_by_name(data_dict['gt_names'], self.class_names)
+            data_dict['gt_boxes'] = data_dict['gt_boxes'][selected]
+            data_dict['gt_names'] = data_dict['gt_names'][selected]
+            gt_classes = np.array([self.class_names.index(n) + 1 for n in data_dict['gt_names']], dtype=np.int32)
+            gt_boxes = np.concatenate((data_dict['gt_boxes'], gt_classes.reshape(-1, 1).astype(np.float32)), axis=1)
+            data_dict['gt_boxes'] = gt_boxes
+
+            if data_dict.get('gt_boxes2d', None) is not None:
+                data_dict['gt_boxes2d'] = data_dict['gt_boxes2d'][selected]
+
+        if data_dict.get('points', None) is not None or data_dict.get('radar_points', None) is not None:
+            data_dict = self.point_feature_encoder.forward(data_dict)
+
+        data_dict = self.data_processor.forward(
+            data_dict=data_dict
+        )
+
+        if self.training and len(data_dict['gt_boxes']) == 0:
+            new_index = np.random.randint(self.__len__())
+            return self.__getitem__(new_index)
+
+        data_dict.pop('gt_names', None)
+
+        return data_dict
+
+    @staticmethod
+    def collate_batch(batch_list, _unused=False):
+        data_dict = defaultdict(list)
+        for cur_sample in batch_list:
+            for key, val in cur_sample.items():
+                data_dict[key].append(val)
+
+        batch_size = len(batch_list)
+        ret = {}
+        batch_size_ratio = 1
+
+        # 새로 추가된 teacher 키들
+        voxel_merge_keys = {
+            'voxels', 'voxel_num_points',
+            'radar_voxels', 'radar_voxel_num_points',
+            'teacher_voxels_s3', 'teacher_voxel_num_points_s3',
+            'teacher_voxels_s4', 'teacher_voxel_num_points_s4',
+            'teacher_voxels_s5', 'teacher_voxel_num_points_s5',
+            'teacher_voxels_s6', 'teacher_voxel_num_points_s6',
+            'teacher_voxels_s7', 'teacher_voxel_num_points_s7',
+            'teacher_voxels_s8', 'teacher_voxel_num_points_s8',
+            'teacher_voxels_s9', 'teacher_voxel_num_points_s9',
+            'teacher_voxels_s10','teacher_voxel_num_points_s10'
+        }
+        coord_merge_keys = {
+            'voxel_coords', 'radar_voxel_coords', 'teacher_voxel_coords_s3',
+            'teacher_voxel_coords_s4', 'teacher_voxel_coords_s5', 'teacher_voxel_coords_s6',
+            'teacher_voxel_coords_s7', 'teacher_voxel_coords_s8', 'teacher_voxel_coords_s9', 'teacher_voxel_coords_s10'
+        }
+        raw_teacher_point_keys = {'teacher_points_s3','teacher_points_s4','teacher_points_s5','teacher_points_s6','teacher_points_s7','teacher_points_s8', 'teacher_points_s9', 'teacher_points_s10'}
+
+        for key, val in data_dict.items():
+            try:
+                # 1) voxel/num_points류: 그대로 concat
+                if key in voxel_merge_keys:
+                    if isinstance(val[0], list):             # DOUBLE_FLIP 등 multi-view
+                        batch_size_ratio = len(val[0])
+                        val = [i for item in val for i in item]
+                    ret[key] = np.concatenate(val, axis=0)
+
+                # 2) 좌표(coordinates)와 raw points(좌표 패딩 필요)
+                elif key in coord_merge_keys or key in ['points', 'radar_points']:
+                    coors = []
+                    if isinstance(val[0], list):             # DOUBLE_FLIP 등
+                        val = [i for item in val for i in item]
+                    for i, coor in enumerate(val):
+                        coor_pad = np.pad(coor, ((0, 0), (1, 0)),
+                                          mode='constant', constant_values=i)
+                        coors.append(coor_pad)
+                    ret[key] = np.concatenate(coors, axis=0)
+
+                # 3) GT 묶음
+                elif key in ['gt_boxes']:
+                    max_gt = max([len(x) for x in val])
+                    batch_gt = np.zeros((batch_size, max_gt, val[0].shape[-1]), dtype=np.float32)
+                    for k in range(batch_size):
+                        batch_gt[k, :len(val[k]), :] = val[k]
+                    ret[key] = batch_gt
+
+                elif key in ['roi_boxes']:
+                    max_gt = max([x.shape[1] for x in val])
+                    batch_gt = np.zeros((batch_size, val[0].shape[0], max_gt, val[0].shape[-1]), dtype=np.float32)
+                    for k in range(batch_size):
+                        batch_gt[k, :, :val[k].shape[1], :] = val[k]
+                    ret[key] = batch_gt
+
+                elif key in ['roi_scores', 'roi_labels']:
+                    max_gt = max([x.shape[1] for x in val])
+                    batch_gt = np.zeros((batch_size, val[0].shape[0], max_gt), dtype=np.float32)
+                    for k in range(batch_size):
+                        batch_gt[k, :, :val[k].shape[1]] = val[k]
+                    ret[key] = batch_gt
+
+                elif key in ['gt_boxes2d']:
+                    max_boxes = max([len(x) for x in val])
+                    batch_boxes2d = np.zeros((batch_size, max_boxes, val[0].shape[-1]), dtype=np.float32)
+                    for k in range(batch_size):
+                        if val[k].size > 0:
+                            batch_boxes2d[k, :len(val[k]), :] = val[k]
+                    ret[key] = batch_boxes2d
+
+                # 4) 이미지류
+                elif key in ["images", "depth_maps"]:
+                    max_h = max(image.shape[0] for image in val)
+                    max_w = max(image.shape[1] for image in val)
+                    images = []
+                    for image in val:
+                        pad_h = common_utils.get_pad_params(desired_size=max_h, cur_size=image.shape[0])
+                        pad_w = common_utils.get_pad_params(desired_size=max_w, cur_size=image.shape[1])
+                        pad_width = (pad_h, pad_w) if key == "depth_maps" else (pad_h, pad_w, (0, 0))
+                        images.append(np.pad(image, pad_width=pad_width, mode='constant', constant_values=0))
+                    ret[key] = np.stack(images, axis=0)
+
+                elif key in ['calib']:
+                    ret[key] = val
+
+                elif key in ["points_2d"]:
+                    max_len = max(len(_v) for _v in val)
+                    pts = []
+                    for _p in val:
+                        pad = ((0, max_len - len(_p)), (0, 0))
+                        pts.append(np.pad(_p, pad, mode='constant', constant_values=0))
+                    ret[key] = np.stack(pts, axis=0)
+
+                elif key in ['camera_imgs']:
+                    ret[key] = torch.stack([torch.stack(imgs, dim=0) for imgs in val], dim=0)
+
+                # 5) 원시 teacher 포인트는 (필요시 디버깅용) 리스트 그대로 유지
+                elif key in raw_teacher_point_keys:
+                    ret[key] = val
+
+                # 6) 이외 기본 스택
+                else:
+                    ret[key] = np.stack(val, axis=0)
+
+            except Exception as e:
+                print(f'Error in collate_batch: key={key}, err={e}')
+                raise TypeError
+
+        ret['batch_size'] = batch_size * batch_size_ratio
+        return ret
+
 
 
 def create_nuscenes_info(version, data_path, save_path, max_sweeps=10, with_cam=False):

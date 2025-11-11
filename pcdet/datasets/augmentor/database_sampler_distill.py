@@ -17,7 +17,9 @@ class DataBaseSampler_Distill(object):
         self.sampler_cfg = sampler_cfg
         self.logger = logger
         self.db_infos = {}
-        for class_name in class_names:
+        self.min_points_per_class = {}
+        self.total_removals = {class_name: 0 for class_name in self.class_names}
+        for class_name in self.class_names:
             self.db_infos[class_name] = []
             
         self.use_shared_memory = sampler_cfg.get('USE_SHARED_MEMORY', False)
@@ -109,6 +111,9 @@ class DataBaseSampler_Distill(object):
         for name_num in min_gt_points_list:
             name, min_num = name_num.split(':')
             min_num = int(min_num)
+            if name in db_infos.keys():
+                self.min_points_per_class[name] = min_num
+
             if min_num > 0 and name in db_infos.keys():
                 filtered_infos = []
                 for info in db_infos[name]:
@@ -211,6 +216,13 @@ class DataBaseSampler_Distill(object):
                         thr = unique_times[min(k - 1, unique_times.size - 1)]
                         time_mask = times_r <= thr
                         obj_points = obj_points[time_mask]
+
+                # re-check min_points after timestamp filtering
+                class_name = info['name']
+                min_points = self.min_points_per_class.get(class_name, 0)
+                if obj_points.shape[0] < min_points:
+                    self.total_removals[class_name] += 1
+                    continue
                 except Exception:
                     # Gracefully skip filtering on any unexpected error
                     pass
@@ -261,6 +273,28 @@ class DataBaseSampler_Distill(object):
         data_dict['points'] = points
         data_dict['radar_points'] = radar_points
         return data_dict
+
+    def __del__(self):
+        if self.use_shared_memory:
+            self.logger.info('Deleting GT database from shared memory')
+            cur_rank, num_gpus = common_utils.get_dist_info()
+            sa_key = self.sampler_cfg.DB_DATA_PATH[0]
+            if cur_rank % num_gpus == 0 and os.path.exists(f"/dev/shm/{sa_key}"):
+                SharedArray.delete(f"shm://{sa_key}")
+
+            if num_gpus > 1:
+                dist.barrier()
+            self.logger.info('GT database has been removed from shared memory')
+
+        if self.logger is not None:
+            total_removed_count = sum(self.total_removals.values())
+            if total_removed_count > 0:
+                self.logger.info('=' * 60)
+                self.logger.info('Removed GT samples by min_points re-verification:')
+                for class_name, count in self.total_removals.items():
+                    if count > 0:
+                        self.logger.info(f'  - {class_name}: {count}')
+                self.logger.info('=' * 60)
 
     def __call__(self, data_dict):
         """

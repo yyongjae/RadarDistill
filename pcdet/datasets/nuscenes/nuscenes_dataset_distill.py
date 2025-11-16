@@ -33,6 +33,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
             self.infos = self.balanced_infos_resampling(self.infos)
 
         self._debug_log_count = 0
+        self._filter_stats = {'total_boxes': 0, 'filtered_out': 0}
         cfg_lidar_max = getattr(self.dataset_cfg, 'LIDAR_MAX_SWEEPS', None)
         cfg_sample_n_sweeps = None
         try:
@@ -44,11 +45,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
                     break
         except Exception:
             pass
-        if self.logger is not None:
-            try:
-                self.logger.info(f'Dataset init: LIDAR_MAX_SWEEPS={cfg_lidar_max}, SAMPLE_N_SWEEPS={cfg_sample_n_sweeps}')
-            except Exception:
-                pass
+        
 
     def include_nuscenes_data(self, mode):
         self.logger.info('Loading NuScenes dataset')
@@ -125,15 +122,23 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         sweep_points_list = [points]
         sweep_times_list = [np.zeros((points.shape[0], 1))]
 
-        for k in np.random.choice(len(info['sweeps']), max_sweeps - 1, replace=False):
-            points_sweep, times_sweep = self.get_sweep(info['sweeps'][k])
-            sweep_points_list.append(points_sweep)
-            sweep_times_list.append(times_sweep)
+        # DEBUG: Log available sweeps vs requested
+        num_available_sweeps = len(info['sweeps'])
+        num_to_sample = max_sweeps - 1
+
+        # Sequential sampling: take the first N sweeps for consistency
+        if num_to_sample > 0 and num_available_sweeps > 0:
+            actual_sample_count = min(num_to_sample, num_available_sweeps)
+            for k in range(actual_sample_count):  # Sequential: 0, 1, 2, ... (t-1, t-2, t-3, ...)
+                points_sweep, times_sweep = self.get_sweep(info['sweeps'][k])
+                sweep_points_list.append(points_sweep)
+                sweep_times_list.append(times_sweep)
 
         points = np.concatenate(sweep_points_list, axis=0)
         times = np.concatenate(sweep_times_list, axis=0).astype(points.dtype)
 
         points = np.concatenate((points, times), axis=1)
+        
         return points
 
     def crop_image(self, input_dict):
@@ -310,16 +315,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         radar_points = self.get_radar_with_sweeps(index, max_sweeps=6)
         lidar_max = self.dataset_cfg.get('LIDAR_MAX_SWEEPS', 1)
         points = self.get_lidar_with_sweeps(index, max_sweeps=int(lidar_max))
-        if self.logger is not None and self._debug_log_count < 3:
-            try:
-                times_u = np.unique(np.round(points[:, -1], 2))
-                self.logger.info(f'Dataset __getitem__: index={index}, lidar_max={int(lidar_max)}, points_shape={points.shape}, unique_times={times_u[:10]}')
-            except Exception:
-                self.logger.info(f'Dataset __getitem__: index={index}, lidar_max={int(lidar_max)}, points_shape={points.shape}')
-            self._debug_log_count += 1
         
-       
-
         input_dict = {
             'points': points,
             'radar_points': radar_points,
@@ -329,7 +325,19 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
 
         if 'gt_boxes' in info:
             if self.dataset_cfg.get('FILTER_MIN_POINTS_IN_GT', False):
-                mask = ((info['num_lidar_pts'] > self.dataset_cfg.FILTER_MIN_POINTS_IN_GT - 1))
+                # Runtime recalculation: count actual points in current scene (Sweep1 basis)
+                from ...ops.roiaware_pool3d import roiaware_pool3d_utils
+                actual_pts_in_boxes = roiaware_pool3d_utils.points_in_boxes_cpu(
+                    points[:, :3], info['gt_boxes'][:, :7]
+                ).sum(axis=1)
+                mask = (actual_pts_in_boxes > self.dataset_cfg.FILTER_MIN_POINTS_IN_GT - 1)
+                
+                # Accumulate filter statistics
+                total_boxes = len(info['gt_boxes'])
+                passed_boxes = mask.sum()
+                filtered_out = total_boxes - passed_boxes
+                self._filter_stats['total_boxes'] += total_boxes
+                self._filter_stats['filtered_out'] += filtered_out
             else:
                 mask = None
 

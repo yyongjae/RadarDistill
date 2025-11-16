@@ -32,21 +32,6 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
 
-        self._debug_log_count = 0
-        self._filter_stats = {'total_boxes': 0, 'filtered_out': 0}
-        cfg_lidar_max = getattr(self.dataset_cfg, 'LIDAR_MAX_SWEEPS', None)
-        cfg_sample_n_sweeps = None
-        try:
-            aug_list = getattr(self.dataset_cfg.DATA_AUGMENTOR, 'AUG_CONFIG_LIST', [])
-            for cur_cfg in aug_list:
-                name = getattr(cur_cfg, 'NAME', None)
-                if name == 'gt_sampling_distill':
-                    cfg_sample_n_sweeps = cur_cfg.get('SAMPLE_N_SWEEPS', None)
-                    break
-        except Exception:
-            pass
-        
-
     def include_nuscenes_data(self, mode):
         self.logger.info('Loading NuScenes dataset')
         nuscenes_infos = []
@@ -122,23 +107,15 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         sweep_points_list = [points]
         sweep_times_list = [np.zeros((points.shape[0], 1))]
 
-        # DEBUG: Log available sweeps vs requested
-        num_available_sweeps = len(info['sweeps'])
-        num_to_sample = max_sweeps - 1
-
-        # Sequential sampling: take the first N sweeps for consistency
-        if num_to_sample > 0 and num_available_sweeps > 0:
-            actual_sample_count = min(num_to_sample, num_available_sweeps)
-            for k in range(actual_sample_count):  # Sequential: 0, 1, 2, ... (t-1, t-2, t-3, ...)
-                points_sweep, times_sweep = self.get_sweep(info['sweeps'][k])
-                sweep_points_list.append(points_sweep)
-                sweep_times_list.append(times_sweep)
+        for k in np.random.choice(len(info['sweeps']), max_sweeps - 1, replace=False):
+            points_sweep, times_sweep = self.get_sweep(info['sweeps'][k])
+            sweep_points_list.append(points_sweep)
+            sweep_times_list.append(times_sweep)
 
         points = np.concatenate(sweep_points_list, axis=0)
         times = np.concatenate(sweep_times_list, axis=0).astype(points.dtype)
 
         points = np.concatenate((points, times), axis=1)
-        
         return points
 
     def crop_image(self, input_dict):
@@ -313,28 +290,12 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         info = copy.deepcopy(self.infos[index])
         
         radar_points = self.get_radar_with_sweeps(index, max_sweeps=6)
-        lidar_max = self.dataset_cfg.get('LIDAR_MAX_SWEEPS', 1)
-        points = self.get_lidar_with_sweeps(index, max_sweeps=int(lidar_max))
+        points = self.get_lidar_with_sweeps(index, max_sweeps=10)
         
-        # points_s10 = self.get_lidar_with_sweeps(index, max_sweeps=10)
-        # points_s9 = self.get_lidar_with_sweeps(index, max_sweeps=9)
-        # points_s8 = self.get_lidar_with_sweeps(index, max_sweeps=8)
-        # points_s7 = self.get_lidar_with_sweeps(index, max_sweeps=7)
-        # points_s6 = self.get_lidar_with_sweeps(index, max_sweeps=6)
-        # points_s5 = self.get_lidar_with_sweeps(index, max_sweeps=5)
-        # points_s4 = self.get_lidar_with_sweeps(index, max_sweeps=4)
-        # points_s3 = self.get_lidar_with_sweeps(index, max_sweeps=3)
        
 
         input_dict = {
-            'points_s10': points_s10,
-            'points_s9': points_s9,
-            'points_s8': points_s8,
-            'points_s7': points_s7,
-            'points_s6': points_s6,
-            'points_s5': points_s5,
-            'points_s4': points_s4,
-            'points_s3': points_s3,
+            'points': points,
             'radar_points': radar_points,
             'frame_id': Path(info['lidar_path']).stem,
             'metadata': {'token': info['token']}
@@ -342,19 +303,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
 
         if 'gt_boxes' in info:
             if self.dataset_cfg.get('FILTER_MIN_POINTS_IN_GT', False):
-                # Runtime recalculation: count actual points in current scene (Sweep1 basis)
-                from ...ops.roiaware_pool3d import roiaware_pool3d_utils
-                actual_pts_in_boxes = roiaware_pool3d_utils.points_in_boxes_cpu(
-                    points[:, :3], info['gt_boxes'][:, :7]
-                ).sum(axis=1)
-                mask = (actual_pts_in_boxes > self.dataset_cfg.FILTER_MIN_POINTS_IN_GT - 1)
-                
-                # Accumulate filter statistics
-                total_boxes = len(info['gt_boxes'])
-                passed_boxes = mask.sum()
-                filtered_out = total_boxes - passed_boxes
-                self._filter_stats['total_boxes'] += total_boxes
-                self._filter_stats['filtered_out'] += filtered_out
+                mask = ((info['num_lidar_pts'] > self.dataset_cfg.FILTER_MIN_POINTS_IN_GT - 1))
             else:
                 mask = None
 

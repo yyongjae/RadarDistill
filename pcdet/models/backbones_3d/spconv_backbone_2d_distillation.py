@@ -1,5 +1,6 @@
 from functools import partial
 import torch.nn as nn
+import torch
 from ...utils.spconv_utils import replace_feature, spconv
 from .spconv_backbone_2d import post_act_block, SparseBasicBlock, post_act_block_dense, BasicBlock
 
@@ -59,6 +60,23 @@ class Radar_PillarRes18BackBone8x(nn.Module):
     def forward(self, batch_dict):
         pillar_features, pillar_coords = batch_dict['radar_pillar_features'], batch_dict['radar_pillar_coords']
         batch_size = batch_dict['batch_size']
+        
+        # DEBUG: Check pillar_features and coords before sparse tensor creation
+        if torch.isnan(pillar_features).any() or torch.isinf(pillar_features).any():
+            print(f"[BACKBONE DEBUG] NaN/Inf in pillar_features before SparseConvTensor creation")
+            print(f"  Shape: {pillar_features.shape}")
+            print(f"  NaN count: {torch.isnan(pillar_features).sum().item()}")
+            print(f"  Inf count: {torch.isinf(pillar_features).sum().item()}")
+            print(f"  Stats: min={pillar_features.min().item()}, max={pillar_features.max().item()}")
+            raise RuntimeError("NaN/Inf in pillar_features before sparse tensor creation")
+        
+        # Check coords validity
+        if pillar_coords.min() < 0:
+            print(f"[BACKBONE DEBUG] Negative coords detected: min={pillar_coords.min().item()}")
+        if pillar_coords[:, 1].max() >= self.sparse_shape[0] or pillar_coords[:, 2].max() >= self.sparse_shape[1]:
+            print(f"[BACKBONE DEBUG] Out-of-bounds coords: max_x={pillar_coords[:, 1].max().item()}, max_y={pillar_coords[:, 2].max().item()}")
+            print(f"  sparse_shape: {self.sparse_shape}")
+        
         input_sp_tensor = spconv.SparseConvTensor(
             features=pillar_features,
             indices=pillar_coords.int(),
@@ -66,13 +84,32 @@ class Radar_PillarRes18BackBone8x(nn.Module):
             batch_size=batch_size
         )
         
-        x_conv1 = self.conv1(input_sp_tensor)
+        # Detailed debugging for conv1
+        x = input_sp_tensor
+        if torch.isnan(x.features).any():
+            print(f"[BACKBONE DEBUG] NaN in input_sp_tensor.features IMMEDIATELY after SparseConvTensor creation")
+            # Stop execution if input is already NaN
+            batch_dict.update({'radar_multi_scale_2d_features': {'x_conv1': x}})
+            return batch_dict
+
+        for i, layer in enumerate(self.conv1):
+            x = layer(x)
+            if torch.isnan(x.features).any():
+                print(f"[BACKBONE DEBUG] NaN in x_conv1.features after layer {i} ({layer.__class__.__name__})")
+                # Stop execution to prevent further errors
+                batch_dict.update({'radar_multi_scale_2d_features': {'x_conv1': x}})
+                return batch_dict
+
+        x_conv1 = x
         x_conv2 = self.conv2(x_conv1)
         x_conv3 = self.conv3(x_conv2)
         x_conv4 = self.conv4(x_conv3)
         
-        x_conv4 = x_conv4.dense()
-        x_conv5 = self.conv5(x_conv4)
+        x_conv4_dense = x_conv4.dense()
+        x_conv5 = self.conv5(x_conv4_dense)
+
+        # Use the original variable name for consistency
+        x_conv4 = x_conv4_dense
 
         batch_dict.update({
             'radar_multi_scale_2d_features': {

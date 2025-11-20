@@ -110,7 +110,7 @@ class PointFeatureEncoder_Distill(object):
             data_dict['radar_points']
         )  
        
-        if self.point_encoding_config.get('filter_sweeps', False) and 'timestamp' in self.src_feature_list:
+        if self.point_encoding_config.get('filter_sweeps', False) and 'timestamp' in self.src_feature_list: # 여기 안들어감
             max_sweeps = self.point_encoding_config.max_sweeps
             idx = self.src_feature_list.index('timestamp')
             dt = np.round(data_dict['points'][:, idx], 2)

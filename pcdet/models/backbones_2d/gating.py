@@ -307,8 +307,11 @@ class SweepGaterV3(nn.Module):
             weights = weights / z
 
         with torch.no_grad():
+            _, topk_idx, _ = self._topk_mask(logits, kk)
+            sel_mask = torch.zeros_like(logits).scatter(1, topk_idx, 1.0)  # [B,S,H,W]
+            inc = sel_mask.mean(dim=(0,2,3), keepdim=True)                 # [1,S,1,1]
+            self.sel_count += inc.unsqueeze(2)           
             self._update_proxy_ema(proxy_map, mask)
-            self.sel_count += torch.ones_like(self.sel_count)
 
         aux_losses = {}
         if self.lb_coeff > 0:

@@ -50,7 +50,7 @@ class PillarNet_Multi_Sweep_Teacher(Detector3DTemplate):
             bi = np.full((pts.shape[0], 1), b, dtype=np.float32)
             pts_cat.append(np.concatenate([bi, pts], axis=1))
         if not pts_cat:
-            return torch.zeros((0, 5), dtype=torch.float32, device=self.device)
+            return torch.zeros((0, 6), dtype=torch.float32, device=self.device)
         out = torch.from_numpy(np.concatenate(pts_cat, axis=0)).to(self.device)
         return out
 
@@ -67,17 +67,39 @@ class PillarNet_Multi_Sweep_Teacher(Detector3DTemplate):
         return tbd
 
     def _build_teacher_stacks_inplace(self, batch_dict):
-        """teacher_points_s8/s9/s10로부터 [B,3,C,H,W] 스택 생성 후 batch_dict에 저장"""
-        keys = ['teacher_points_s8', 'teacher_points_s9', 'teacher_points_s10']
+        """Dynamically detect and process all teacher_points_sX keys to create [B,N,C,H,W] stacks"""
+        # Dynamically find all teacher point keys
+        keys = sorted([k for k in batch_dict.keys() if k.startswith('teacher_points_s')],
+                     key=lambda x: int(x.split('_s')[-1]))  # Sort by sweep number
+        
+        if not keys:
+            raise ValueError("No teacher_points_sX keys found in batch_dict")
+        
+        # Expose ordering for downstream logging (e.g., use s1/s5/s10 labels instead of indices)
+        batch_dict['teacher_keys_order'] = keys
+        batch_dict['teacher_sweeps_order'] = [int(k.split('_s')[-1]) for k in keys]
+
         lows, highs, highs8 = [], [], []
         for k in keys:
             tbd = self._forward_teacher_once(batch_dict, k)
             lows.append(  tbd['multi_scale_2d_features']['x_conv4'] )   # [B,C,H8,W8]
             highs.append( tbd['spatial_features_2d'] )                   # [B,C,H,W]
             highs8.append(tbd['spatial_features_2d_8x'] )                # [B,C,H8,W8]
-        batch_dict['lidar_teachers_low']      = torch.stack(lows,  dim=1)   # [B,3,C,H8,W8]
-        batch_dict['lidar_teachers_high']     = torch.stack(highs, dim=1)   # [B,3,C,H,W]
-        batch_dict['lidar_teachers_high_8x']  = torch.stack(highs8,dim=1)   # [B,3,C,H8,W8]
+        
+        # Stack: [B,N,C,H,W] where N=number of teachers
+        batch_dict['lidar_teachers_low']      = torch.stack(lows,  dim=1)   # [B,N,C,H8,W8]
+        batch_dict['lidar_teachers_high']     = torch.stack(highs, dim=1)   # [B,N,C,H,W]
+        batch_dict['lidar_teachers_high_8x']  = torch.stack(highs8,dim=1)   # [B,N,C,H8,W8]
+        
+        # Add sweep times for gating positional embedding (delta mode)
+        if 'teacher_sweep_times' in batch_dict:
+            # Convert to torch tensor and move to device: [N_teachers]
+            ts = batch_dict['teacher_sweep_times']
+            if isinstance(ts, torch.Tensor):
+                sweep_times = ts.to(self.device)
+            else:
+                sweep_times = torch.from_numpy(ts).to(self.device)
+            batch_dict['sweep_times'] = sweep_times  # [N], used by gater for pos_mode='delta'
     # ----------------------------------------------------------------------------- #
 
     def forward(self, batch_dict):

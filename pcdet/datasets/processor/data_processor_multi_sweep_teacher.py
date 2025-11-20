@@ -62,8 +62,6 @@ class VoxelGeneratorWrapper():
 
 
 class DataProcessor_Multi_Sweep_Teacher(object):
-    TEACHER_KEYS = ('teacher_points_s3','teacher_points_s4','teacher_points_s5','teacher_points_s6','teacher_points_s7','teacher_points_s8', 'teacher_points_s9', 'teacher_points_s10')
-
     def __init__(self, processor_configs, point_cloud_range, training, num_point_features, radar_num_point_features=6):
         self.point_cloud_range = point_cloud_range
         self.training = training
@@ -77,12 +75,17 @@ class DataProcessor_Multi_Sweep_Teacher(object):
             cur_processor = getattr(self, cur_cfg.NAME)(config=cur_cfg)
             self.data_processor_queue.append(cur_processor)
 
+    @staticmethod
+    def _get_teacher_keys(data_dict):
+        """Dynamically detect teacher point keys from data_dict"""
+        return [k for k in data_dict.keys() if k.startswith('teacher_points_s')]
+
     def mask_points_and_boxes_outside_range(self, data_dict=None, config=None):
         if data_dict is None:
             return partial(self.mask_points_and_boxes_outside_range, config=config)
 
-        # teacher 포인트 3세트 범위 마스크
-        for k in self.TEACHER_KEYS:
+        # teacher 포인트 동적 범위 마스크
+        for k in self._get_teacher_keys(data_dict):
             if data_dict.get(k, None) is not None:
                 m = common_utils.mask_points_by_range(data_dict[k], self.point_cloud_range)
                 data_dict[k] = data_dict[k][m]
@@ -107,7 +110,7 @@ class DataProcessor_Multi_Sweep_Teacher(object):
             return partial(self.shuffle_points, config=config)
 
         if config.SHUFFLE_ENABLED[self.mode]:
-            for k in self.TEACHER_KEYS:
+            for k in self._get_teacher_keys(data_dict):
                 if data_dict.get(k, None) is not None and len(data_dict[k]) > 0:
                     idx = np.random.permutation(len(data_dict[k]))
                     data_dict[k] = data_dict[k][idx]
@@ -155,16 +158,20 @@ class DataProcessor_Multi_Sweep_Teacher(object):
 
         drop_xyz = not data_dict.get('use_lead_xyz', True)
 
-        # -------- teacher 세트 각각 보xel화 --------
-        for k in self.TEACHER_KEYS:
+        # -------- teacher 세트 각각 보xel화 (동적 teacher keys) --------
+        for k in self._get_teacher_keys(data_dict):
             if data_dict.get(k, None) is None:
                 continue
             pts = data_dict[k]
+            # Extract suffix: 'teacher_points_s1' -> 's1', 'teacher_points_s10' -> 's10'
+            suffix = k.split('_s')[-1] if '_s' in k else k[-2:]
+            suffix = 's' + suffix  # Add 's' prefix back
+            
             if pts is None or pts.size == 0:
                 # 빈 케이스도 키는 만들어 둠
-                data_dict[f'teacher_voxels_{k[-2:]}'] = np.zeros((0, config.MAX_POINTS_PER_VOXEL, self.num_point_features), dtype=pts.dtype)
-                data_dict[f'teacher_voxel_coords_{k[-2:]}'] = np.zeros((0, 3), dtype=np.int32)
-                data_dict[f'teacher_voxel_num_points_{k[-2:]}'] = np.zeros((0,), dtype=np.int32)
+                data_dict[f'teacher_voxels_{suffix}'] = np.zeros((0, config.MAX_POINTS_PER_VOXEL, self.num_point_features), dtype=pts.dtype)
+                data_dict[f'teacher_voxel_coords_{suffix}'] = np.zeros((0, 3), dtype=np.int32)
+                data_dict[f'teacher_voxel_num_points_{suffix}'] = np.zeros((0,), dtype=np.int32)
                 continue
 
             if config.get('DOUBLE_FLIP', False):
@@ -173,13 +180,11 @@ class DataProcessor_Multi_Sweep_Teacher(object):
                 for p in base_sets:
                     v, c, n = self._voxelize_once(p, drop_xyz, config)
                     vox_list.append(v); coord_list.append(c); num_list.append(n)
-                suffix = k[-2:]   # 's8','s9','s10' 끝 두 글자 사용
                 data_dict[f'teacher_voxels_{suffix}'] = vox_list
                 data_dict[f'teacher_voxel_coords_{suffix}'] = coord_list
                 data_dict[f'teacher_voxel_num_points_{suffix}'] = num_list
             else:
                 v, c, n = self._voxelize_once(pts, drop_xyz, config)
-                suffix = k[-2:]
                 data_dict[f'teacher_voxels_{suffix}'] = v
                 data_dict[f'teacher_voxel_coords_{suffix}'] = c
                 data_dict[f'teacher_voxel_num_points_{suffix}'] = n

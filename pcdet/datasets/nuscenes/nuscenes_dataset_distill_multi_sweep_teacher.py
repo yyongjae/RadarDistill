@@ -5,6 +5,13 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
+try:
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+except ImportError:
+    plt = None
+
 from ...ops.roiaware_pool3d import roiaware_pool3d_utils
 from ...utils import common_utils
 from ..dataset_distill_multi_sweep_teacher import DatasetTemplate_Distill_Multi_Sweep_Teacher
@@ -33,6 +40,10 @@ class NuScenesDataset_Distill_Multi_Sweep_Teacher(DatasetTemplate_Distill_Multi_
         self.include_nuscenes_data(self.mode)
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
+
+        self._debug_log_count = 0
+        self._filter_stats = {'total_boxes': 0, 'filtered_out': 0}
+        self._sweep_vis_done = False
 
     def include_nuscenes_data(self, mode):
         self.logger.info('Loading NuScenes dataset')
@@ -124,7 +135,9 @@ class NuScenesDataset_Distill_Multi_Sweep_Teacher(DatasetTemplate_Distill_Multi_
     def get_lidar_with_sweeps_in_order(self, index, max_sweeps=10):
         """
         현재 프레임 + |time_lag|가 작은 순으로 과거 스윕을 최대 max_sweeps-1개 누적.
-        반환: (N, 5)  ==  xyzi + time_lag
+        반환: 
+            points: (N, 5)  ==  xyzi + time_lag
+            mean_time: float, mean time_lag of this sweep (for gating pos embedding)
         """
         info = self.infos[index]
 
@@ -148,7 +161,11 @@ class NuScenesDataset_Distill_Multi_Sweep_Teacher(DatasetTemplate_Distill_Multi_
         times  = np.concatenate(sweep_times_list,  axis=0).astype(points.dtype)
 
         points = np.concatenate((points, times), axis=1)  # (N,5)
-        return points
+        
+        # Compute mean time_lag for this sweep (for gating positional embedding)
+        mean_time = float(np.abs(times).mean()) if times.size > 0 else 0.0
+        
+        return points, mean_time
     # ---------------------------------------------------------------------------------------
 
     def crop_image(self, input_dict):
@@ -325,25 +342,51 @@ class NuScenesDataset_Distill_Multi_Sweep_Teacher(DatasetTemplate_Distill_Multi_
         
         radar_points = self.get_radar_with_sweeps(index, max_sweeps=6)
 
-        # ------------------------ [NEW] teacher 포인트(증강 전) 생성 ------------------------
-        tpts8  = self.get_lidar_with_sweeps_in_order(index, max_sweeps=8)   # [N,4]
-        tpts9  = self.get_lidar_with_sweeps_in_order(index, max_sweeps=9)
-        tpts10 = self.get_lidar_with_sweeps_in_order(index, max_sweeps=10)
-        # -----------------------------------------------------------------------------------
-    
+        if self.training and not self._sweep_vis_done:
+            self._visualize_sweeps_once(index, info, radar_points)
+
+        # Load teacher points for configured sweeps (default: [1, 3, 5, 10])
+        teacher_sweeps = self.dataset_cfg.get('TEACHER_SWEEPS', [8, 9, 10])
+        teacher_points_dict = {}
+        
+        # Use nominal sweep times (global, not per-sample)
+        # Fixed nominal times based on sweep configuration
+        teacher_sweep_times = []
+        for sweep_count in teacher_sweeps:
+            pts, _ = self.get_lidar_with_sweeps_in_order(index, max_sweeps=sweep_count)
+            teacher_points_dict[f'teacher_points_s{sweep_count}'] = pts
+            # Nominal time: proportional to sweep count (most recent = 0)
+            # s1 → 0.0, s5 → 0.4, s10 → 0.9
+            nominal_time = float(sweep_count - 1) / float(max(teacher_sweeps))
+            teacher_sweep_times.append(nominal_time)
+        
+        # Use the largest sweep for main 'points' key
+        max_sweep = max(teacher_sweeps)
+        main_points = teacher_points_dict[f'teacher_points_s{max_sweep}']
+        
         input_dict = {
-            'points': tpts10,
-            'teacher_points_s8':  tpts8,
-            'teacher_points_s9':  tpts9,
-            'teacher_points_s10': tpts10,
+            'points': main_points,
             'radar_points': radar_points,
             'frame_id': Path(info['lidar_path']).stem,
             'metadata': {'token': info['token']},
-        }
+            'teacher_sweep_times': np.array(teacher_sweep_times, dtype=np.float32),  # [N_teachers]
+        } 
+        input_dict.update(teacher_points_dict)
 
         if 'gt_boxes' in info:
             if self.dataset_cfg.get('FILTER_MIN_POINTS_IN_GT', False):
-                mask = ((info['num_lidar_pts'] > self.dataset_cfg.FILTER_MIN_POINTS_IN_GT - 1))
+                # Runtime recalculation: count actual points in current scene (using largest sweep)
+                actual_pts_in_boxes = roiaware_pool3d_utils.points_in_boxes_cpu(
+                    main_points[:, :3], info['gt_boxes'][:, :7]
+                ).sum(axis=1)
+                mask = (actual_pts_in_boxes > self.dataset_cfg.FILTER_MIN_POINTS_IN_GT - 1)
+                
+                # Accumulate filter statistics
+                total_boxes = len(info['gt_boxes'])
+                passed_boxes = mask.sum()
+                filtered_out = total_boxes - passed_boxes
+                self._filter_stats['total_boxes'] += total_boxes
+                self._filter_stats['filtered_out'] += filtered_out
             else:
                 mask = None
 
@@ -351,6 +394,7 @@ class NuScenesDataset_Distill_Multi_Sweep_Teacher(DatasetTemplate_Distill_Multi_
                 'gt_names': info['gt_names'] if mask is None else info['gt_names'][mask],
                 'gt_boxes': info['gt_boxes'] if mask is None else info['gt_boxes'][mask]
             })
+            
         if self.use_camera:
             input_dict = self.load_camera_info(input_dict, info)
 
@@ -364,8 +408,57 @@ class NuScenesDataset_Distill_Multi_Sweep_Teacher(DatasetTemplate_Distill_Multi_
         if not self.dataset_cfg.PRED_VELOCITY and 'gt_boxes' in data_dict:
             data_dict['gt_boxes'] = data_dict['gt_boxes'][:, [0, 1, 2, 3, 4, 5, 6, -1]]
        
-
         return data_dict
+
+    def _visualize_sweeps_once(self, index, info, radar_points):
+        if self._sweep_vis_done:
+            return
+        if plt is None:
+            self._sweep_vis_done = True
+            return
+
+        lidar_s1, _ = self.get_lidar_with_sweeps_in_order(index, max_sweeps=1)
+        lidar_s10, _ = self.get_lidar_with_sweeps_in_order(index, max_sweeps=10)
+
+        max_points = 80000
+
+        def _sample(points):
+            if points.shape[0] <= max_points:
+                return points
+            idxs = np.random.choice(points.shape[0], max_points, replace=False)
+            return points[idxs]
+
+        lidar_s1 = _sample(lidar_s1)
+        lidar_s10 = _sample(lidar_s10)
+        radar_pts = _sample(radar_points)
+
+        out_dir = self.root_path / 'sweep_vis'
+        out_dir.mkdir(parents=True, exist_ok=True)
+        frame_id = Path(info['lidar_path']).stem
+
+        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+        data_list = [lidar_s1, lidar_s10, radar_pts]
+        title_list = ['lidar_s1', 'lidar_s10', 'radar']
+
+        for ax, pts, title in zip(axes, data_list, title_list):
+            ax.scatter(pts[:, 0], pts[:, 1], s=0.5, alpha=0.6)
+            ax.set_title(title)
+            ax.set_xlabel('X')
+            ax.set_ylabel('Y')
+            ax.set_aspect('equal')
+            if hasattr(self, 'point_cloud_range'):
+                x_min, y_min = self.point_cloud_range[0], self.point_cloud_range[1]
+                x_max, y_max = self.point_cloud_range[3], self.point_cloud_range[4]
+                ax.set_xlim(x_min, x_max)
+                ax.set_ylim(y_min, y_max)
+
+        fig.tight_layout()
+        save_path = out_dir / f'sweep_vis_{frame_id}.png'
+        fig.savefig(save_path, dpi=200)
+        plt.close(fig)
+
+        self._sweep_vis_done = True
 
 
     def evaluation(self, det_annos, class_names, **kwargs):
@@ -542,19 +635,20 @@ class NuScenesDataset_Distill_Multi_Sweep_Teacher(DatasetTemplate_Distill_Multi_
         ret = {}
         batch_size_ratio = 1
 
-        # 새로 추가된 teacher 키들
-        voxel_merge_keys = {
-            'voxels', 'voxel_num_points',
-            'radar_voxels', 'radar_voxel_num_points',
-            'teacher_voxels_s8', 'teacher_voxel_num_points_s8',
-            'teacher_voxels_s9', 'teacher_voxel_num_points_s9',
-            'teacher_voxels_s10','teacher_voxel_num_points_s10'
-        }
-        coord_merge_keys = {
-            'voxel_coords', 'radar_voxel_coords',
-            'teacher_voxel_coords_s8', 'teacher_voxel_coords_s9', 'teacher_voxel_coords_s10'
-        }
-        raw_teacher_point_keys = {'teacher_points_s8', 'teacher_points_s9', 'teacher_points_s10'}
+        # Dynamically build teacher key sets from actual data
+        base_voxel_keys = {'voxels', 'voxel_num_points', 'radar_voxels', 'radar_voxel_num_points'}
+        base_coord_keys = {'voxel_coords', 'radar_voxel_coords'}
+        
+        # Collect all teacher keys from first sample
+        first_sample_keys = set(batch_list[0].keys())
+        teacher_voxel_keys = {k for k in first_sample_keys 
+                             if k.startswith('teacher_voxels_') or k.startswith('teacher_voxel_num_points_')}
+        teacher_coord_keys = {k for k in first_sample_keys if k.startswith('teacher_voxel_coords_')}
+        teacher_point_keys = {k for k in first_sample_keys if k.startswith('teacher_points_s')}
+        
+        voxel_merge_keys = base_voxel_keys | teacher_voxel_keys
+        coord_merge_keys = base_coord_keys | teacher_coord_keys
+        raw_teacher_point_keys = teacher_point_keys
 
         for key, val in data_dict.items():
             try:
@@ -635,6 +729,12 @@ class NuScenesDataset_Distill_Multi_Sweep_Teacher(DatasetTemplate_Distill_Multi_
                 # 5) 원시 teacher 포인트는 (필요시 디버깅용) 리스트 그대로 유지
                 elif key in raw_teacher_point_keys:
                     ret[key] = val
+                
+                # 5.5) teacher_sweep_times: [N_teachers]
+                # All samples have same nominal times (global sweep config)
+                elif key == 'teacher_sweep_times':
+                    # Use first sample (all samples are identical now)
+                    ret[key] = val[0]  # [N_teachers], np.float32
 
                 # 6) 이외 기본 스택
                 else:

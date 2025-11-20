@@ -410,6 +410,13 @@ class Radar_CenterHead(nn.Module):
         spatial_features_2d = data_dict['radar_spatial_features_2d']
         x = self.shared_conv(spatial_features_2d)
 
+        # ─────────────────────────────────────────
+        # 원본 GT 박스 보존
+        # assign_targets 내에서 재번호화되기 전의 글로벌 클래스 ID를 유지
+        if self.training and 'gt_boxes' in data_dict:
+            data_dict['orig_gt_boxes'] = data_dict['gt_boxes'].clone()
+        # ─────────────────────────────────────────
+
         pred_dicts = []
         for head in self.heads_list:
             pred_dicts.append(head(x))

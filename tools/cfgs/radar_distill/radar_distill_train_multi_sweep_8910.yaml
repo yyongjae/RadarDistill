@@ -2,7 +2,7 @@ CLASS_NAMES: ['car','truck', 'construction_vehicle', 'bus', 'trailer',
               'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
 
 DATA_CONFIG:
-    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset_distill_multi_sweep_teacher.yaml
+    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset_distill_multi_sweep_teacher_8910.yaml
     POINT_CLOUD_RANGE: [-54.0, -54.0, -5.0, 54.0, 54.0, 3.0]
     INFO_PATH: {
     'train': [nuscenes_infos_6radar_10sweeps_train.pkl],
@@ -107,7 +107,7 @@ MODEL:
         GATER:
           use_runtime_assert: True
         # Gating loss weights (V3 style: all OFF)
-        GATE_LB_COEFF: 0.05
+        GATE_LB_COEFF: 0.0
         GATE_ENT_COEFF: 0.0
         GATE_TV_COEFF: 0.0
         
@@ -119,8 +119,8 @@ MODEL:
         GATE_BAND_H: 0.20
         
         # Router (V4 production: Heuristic + Learned)
-        GATE_W_HEUR: 0.0
-        GATE_W_LEAR: 1.0
+        GATE_W_HEUR: 0.5
+        GATE_W_LEAR: 0.5
         GATE_ROUTER_SPATIAL: True
         GATE_ROUTER_HIDDEN: 24
         

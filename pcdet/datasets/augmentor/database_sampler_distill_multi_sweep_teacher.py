@@ -17,6 +17,15 @@ class DataBaseSampler_Distill_Multi_Sweep_Teacher(object):
         self.sampler_cfg = sampler_cfg
         self.logger = logger
         self.db_infos = {}
+        
+        # Debug statistics
+        self._debug_stats = {
+            'total_objects': 0,
+            'total_scenes': 0,
+            'teacher_filtering': {}  # Will store per-teacher stats
+        }
+        self._debug_log_interval = 50  # Log every N scenes
+
         for class_name in class_names:
             self.db_infos[class_name] = []
             
@@ -165,7 +174,7 @@ class DataBaseSampler_Distill_Multi_Sweep_Teacher(object):
         return arr[dt <= thr]
 
     def _parse_k_from_key(self, key):
-        # 'teacher_points_s8' / '..._s9' / '..._s10' -> 8/9/10
+        # 'teacher_points_s1' / '..._s5' / '..._s8' / '..._s10' -> 1/5/8/10
         return int(key.split('_s')[-1])
 
     def add_sampled_boxes_to_scene(self, data_dict, sampled_gt_boxes, total_valid_sampled_dict):
@@ -173,8 +182,8 @@ class DataBaseSampler_Distill_Multi_Sweep_Teacher(object):
         gt_boxes = data_dict['gt_boxes'][gt_boxes_mask]
         gt_names = data_dict['gt_names'][gt_boxes_mask]
 
-        # teacher 포인트 키 수집
-        teacher_keys = [k for k in ['teacher_points_s8','teacher_points_s9','teacher_points_s10'] if k in data_dict]
+        # Dynamically collect teacher point keys (e.g., teacher_points_s1, teacher_points_s3, etc.)
+        teacher_keys = [k for k in data_dict.keys() if k.startswith('teacher_points_s')]
         teacher_pts = {k: data_dict[k] for k in teacher_keys}
 
         radar_points = data_dict['radar_points']
@@ -185,7 +194,24 @@ class DataBaseSampler_Distill_Multi_Sweep_Teacher(object):
             )
             data_dict.pop('calib'); data_dict.pop('road_plane')
 
-        obj_points_list, obj_radar_points_list = [], []
+        # Initialize lists for each teacher separately (efficient: filter only once per teacher)
+        teacher_obj_points = {k: [] for k in teacher_keys}
+        obj_radar_points_list = []
+        ts_idx = self.sampler_cfg.get('TIMESTAMP_IDX', 4)
+        
+        # Debug: Initialize per-teacher stats for this scene
+        scene_stats = {}
+        for k in teacher_keys:
+            if k not in self._debug_stats['teacher_filtering']:
+                self._debug_stats['teacher_filtering'][k] = {
+                    'total_points_before': 0,
+                    'total_points_after': 0,
+                    'total_objects': 0,
+                    'unique_sweeps_before': [],
+                    'unique_sweeps_after': []
+                }
+            scene_stats[k] = {'before': 0, 'after': 0, 'sweeps_before': set(), 'sweeps_after': set()}
+        
         if self.use_shared_memory:
             gt_database_data = SharedArray.attach(f"shm://{self.gt_database_data_key}")
             gt_database_data.setflags(write=0)
@@ -203,39 +229,62 @@ class DataBaseSampler_Distill_Multi_Sweep_Teacher(object):
                 radar_file_path = self.root_path / info['radar_path']
                 obj_radar_points = np.fromfile(str(radar_file_path), dtype=np.float32).reshape(-1, 6)
 
-            # 위치 보정
+            # Position adjustment first (before filtering)
             obj_points[:, :3] += info['box3d_lidar'][:3]
             if obj_radar_points is not None:
                 obj_radar_points[:, :3] += info['box3d_lidar'][:3]
 
             if self.sampler_cfg.get('USE_ROAD_PLANE', False):
-                dv = mv_height  # 위에서 리스트로 받았으면 idx로 접근
+                dv = mv_height
                 obj_points[:, 2] -= dv
                 if obj_radar_points is not None:
                     obj_radar_points[:, 2] -= dv
 
-            obj_points_list.append(obj_points)
+            # Filter once per teacher (efficient: no redundant filtering)
+            for k in teacher_keys:
+                K = self._parse_k_from_key(k)  # Extract sweep count: s1→1, s5→5, s8→8, s10→10
+                
+                # Debug: Track before filtering
+                pts_before = len(obj_points)
+                if obj_points.shape[1] > ts_idx:
+                    ts_before = np.unique(np.round(obj_points[:, ts_idx], 2))
+                    scene_stats[k]['sweeps_before'].update(ts_before)
+                scene_stats[k]['before'] += pts_before
+                
+                # Perform filtering
+                obj_pts_for_k = self._keep_first_k_sweeps(obj_points, k=K, ts_idx=ts_idx)
+                
+                # Debug: Track after filtering
+                pts_after = len(obj_pts_for_k)
+                if obj_pts_for_k.shape[1] > ts_idx:
+                    ts_after = np.unique(np.round(obj_pts_for_k[:, ts_idx], 2))
+                    scene_stats[k]['sweeps_after'].update(ts_after)
+                scene_stats[k]['after'] += pts_after
+                
+                # Accumulate global stats
+                self._debug_stats['teacher_filtering'][k]['total_points_before'] += pts_before
+                self._debug_stats['teacher_filtering'][k]['total_points_after'] += pts_after
+                self._debug_stats['teacher_filtering'][k]['total_objects'] += 1
+                
+                teacher_obj_points[k].append(obj_pts_for_k)
+
+            self._debug_stats['total_objects'] += 1
+
             if obj_radar_points is not None:
                 obj_radar_points_list.append(obj_radar_points)
 
-        obj_points = np.concatenate(obj_points_list, axis=0) if obj_points_list else np.zeros((0, 5), dtype=np.float32)
+        # Concatenate per teacher
         obj_radar_points = np.concatenate(obj_radar_points_list, axis=0) if obj_radar_points_list else np.zeros((0, 6), dtype=np.float32)
-
         sampled_gt_names = np.array([x['name'] for x in total_valid_sampled_dict])
 
-        # 충돌 제거용 확장 박스
+        # Remove collision boxes
         large_boxes = box_utils.enlarge_box3d(sampled_gt_boxes[:, 0:7], extra_width=self.sampler_cfg.REMOVE_EXTRA_WIDTH)
 
-        # teacher 각각에 대해: 기존 포인트에서 충돌 제거 → DB obj포인트 K스윕만 추가
-        ts_idx = self.sampler_cfg.get('TIMESTAMP_IDX', 4)
+        # Merge augmentation objects with scene points for each teacher
         for k in teacher_keys:
-            pts = box_utils.remove_points_in_boxes3d(teacher_pts[k], large_boxes)
-
-            # K = 8/9/10 파싱 후 obj_points에서 앞 K스윕만 취함
-            K = self._parse_k_from_key(k)
-            obj_pts_for_k = self._keep_first_k_sweeps(obj_points, k=K, ts_idx=ts_idx)
-
-            data_dict[k] = np.concatenate([obj_pts_for_k, pts], axis=0)
+            pts_scene = box_utils.remove_points_in_boxes3d(teacher_pts[k], large_boxes)
+            obj_pts = np.concatenate(teacher_obj_points[k], axis=0) if teacher_obj_points[k] else np.zeros((0, 5), dtype=np.float32)
+            data_dict[k] = np.concatenate([obj_pts, pts_scene], axis=0)
 
         # 레이더 포인트
         radar_points = box_utils.remove_points_in_boxes3d(radar_points, large_boxes)
@@ -244,6 +293,36 @@ class DataBaseSampler_Distill_Multi_Sweep_Teacher(object):
         # GT 갱신
         data_dict['gt_names'] = np.concatenate([gt_names, sampled_gt_names], axis=0)
         data_dict['gt_boxes'] = np.concatenate([gt_boxes, sampled_gt_boxes], axis=0)
+        
+        # Debug: Log statistics periodically
+        self._debug_stats['total_scenes'] += 1
+        if self.logger and self._debug_stats['total_scenes'] % self._debug_log_interval == 0:
+            self.logger.info(f"\n{'='*80}")
+            self.logger.info(f"[MULTI_SWEEP_FILTER_DEBUG] Scene #{self._debug_stats['total_scenes']} Statistics")
+            self.logger.info(f"{'='*80}")
+            self.logger.info(f"Total augmentation objects processed: {self._debug_stats['total_objects']}")
+            self.logger.info(f"Total augmentation objects in this scene: {len(total_valid_sampled_dict)}")
+            
+            for k in sorted(teacher_keys):
+                stats = self._debug_stats['teacher_filtering'][k]
+                K = self._parse_k_from_key(k)
+                pts_before = stats['total_points_before']
+                pts_after = stats['total_points_after']
+                retention_rate = (pts_after / pts_before * 100) if pts_before > 0 else 0
+                
+                sweeps_before = sorted(scene_stats[k]['sweeps_before'])
+                sweeps_after = sorted(scene_stats[k]['sweeps_after'])
+                
+                self.logger.info(f"\n  [{k}] Target: {K} sweeps")
+                self.logger.info(f"    - This scene: {scene_stats[k]['before']} pts → {scene_stats[k]['after']} pts")
+                self.logger.info(f"    - This scene sweeps: {len(sweeps_before)} → {len(sweeps_after)}")
+                self.logger.info(f"    - This scene timestamps before: {sweeps_before[:10]}{'...' if len(sweeps_before) > 10 else ''}")
+                self.logger.info(f"    - This scene timestamps after:  {sweeps_after}")
+                self.logger.info(f"    - Cumulative: {pts_before:,} pts → {pts_after:,} pts ({retention_rate:.1f}% retained)")
+                self.logger.info(f"    - Cumulative objects: {stats['total_objects']}")
+            
+            self.logger.info(f"{'='*80}\n")
+        
         return data_dict
 
 

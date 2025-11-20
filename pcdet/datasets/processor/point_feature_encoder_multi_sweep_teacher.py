@@ -72,8 +72,6 @@ class PointFeatureEncoder(object):
         return point_features, True
     
 class PointFeatureEncoder_Distill_Multi_Sweep_Teacher(object):
-    TEACHER_KEYS = ('teacher_points_s3','teacher_points_s4','teacher_points_s5','teacher_points_s6','teacher_points_s7','teacher_points_s8', 'teacher_points_s9', 'teacher_points_s10')
-
     def __init__(self, config, point_cloud_range=None):
         super().__init__()
         self.point_encoding_config = config
@@ -98,14 +96,15 @@ class PointFeatureEncoder_Distill_Multi_Sweep_Teacher(object):
     def forward(self, data_dict):
         """
         points 키는 사용하지 않음.
-        - teacher_points_s8/s9/s10: 동일 인코딩 적용 (필요시 timestamp로 sweep filter)
+        - teacher_points_sX (dynamic): 동일 인코딩 적용 (필요시 timestamp로 sweep filter)
         - radar_points: radar 인코딩 별도 적용
         """
         # 1) (옵션) teacher sweep 필터링: timestamp 기준
+        teacher_keys = [k for k in data_dict.keys() if k.startswith('teacher_points_s')]
         if self.point_encoding_config.get('filter_sweeps', False) and 'timestamp' in self.src_feature_list:
             ts_idx = self.src_feature_list.index('timestamp')
             max_sweeps = self.point_encoding_config.max_sweeps
-            for k in self.TEACHER_KEYS:
+            for k in teacher_keys:
                 if k not in data_dict:
                     continue
                 pts = data_dict[k]
@@ -118,7 +117,7 @@ class PointFeatureEncoder_Distill_Multi_Sweep_Teacher(object):
 
         # 2) teacher 인코딩
         use_lead_xyz_teacher = True
-        for k in self.TEACHER_KEYS:
+        for k in teacher_keys:
             if k not in data_dict:
                 continue
             pts = data_dict[k]

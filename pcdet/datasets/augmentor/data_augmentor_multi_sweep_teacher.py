@@ -24,7 +24,8 @@ class DataAugmentor_Multi_Sweep_Teacher(object):
             cur_augmentor = getattr(self, cur_cfg.NAME)(config=cur_cfg)
             self.data_augmentor_queue.append(cur_augmentor)
         
-        self.TEACHER_KEYS = ('teacher_points_s8', 'teacher_points_s9', 'teacher_points_s10')
+        # TEACHER_KEYS will be set dynamically based on data_dict keys
+        self.TEACHER_KEYS = None
 
     def disable_augmentation(self, augmentor_configs):
         self.data_augmentor_queue = []
@@ -73,11 +74,15 @@ class DataAugmentor_Multi_Sweep_Teacher(object):
     def __setstate__(self, d):
         self.__dict__.update(d)
 
+    def _get_teacher_keys(self, data_dict):
+        """Dynamically find teacher point keys in data_dict"""
+        return [k for k in data_dict.keys() if k.startswith('teacher_points_s')]
+
     # ---------- [NEW] teacher 3종 포인트에 동일 변환을 일괄 적용하는 헬퍼들 ----------
     def _teacher_apply_flip(self, data_dict, axis, enable: bool):
         if not enable: 
             return
-        for k in self.TEACHER_KEYS:
+        for k in self._get_teacher_keys(data_dict):
             if k not in data_dict or data_dict[k] is None or data_dict[k].size == 0:
                 continue
             pts = data_dict[k]
@@ -91,7 +96,7 @@ class DataAugmentor_Multi_Sweep_Teacher(object):
         if angle is None: 
             return
         c, s = np.cos(angle), np.sin(angle)
-        for k in self.TEACHER_KEYS:
+        for k in self._get_teacher_keys(data_dict):
             if k not in data_dict or data_dict[k] is None or data_dict[k].size == 0:
                 continue
             pts = data_dict[k]
@@ -103,7 +108,7 @@ class DataAugmentor_Multi_Sweep_Teacher(object):
     def _teacher_apply_scaling(self, data_dict, scale: float):
         if scale is None: 
             return
-        for k in self.TEACHER_KEYS:
+        for k in self._get_teacher_keys(data_dict):
             if k not in data_dict or data_dict[k] is None or data_dict[k].size == 0:
                 continue
             pts = data_dict[k]
@@ -114,7 +119,7 @@ class DataAugmentor_Multi_Sweep_Teacher(object):
         if t is None: 
             return
         t = t.reshape(1, 3).astype(np.float32)
-        for k in self.TEACHER_KEYS:
+        for k in self._get_teacher_keys(data_dict):
             if k not in data_dict or data_dict[k] is None or data_dict[k].size == 0:
                 continue
             pts = data_dict[k]

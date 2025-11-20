@@ -229,11 +229,25 @@ class DatasetTemplate_Distill_Multi_Sweep_Teacher(torch_data.Dataset):
 
         for key, val in data_dict.items():
             try:
-                if key in ['voxels', 'voxel_num_points', 'radar_voxels', 'radar_voxel_num_points']:
+                # Handle teacher voxels (dynamic keys like teacher_voxels_s1, teacher_voxels_s5, etc.)
+                if key.startswith('teacher_voxels_') or key.startswith('teacher_voxel_num_points_'):
+                    if isinstance(val[0], list):
+                        val = [i for item in val for i in item]
+                    ret[key] = np.concatenate(val, axis=0)
+                elif key in ['voxels', 'voxel_num_points', 'radar_voxels', 'radar_voxel_num_points']:
                     if isinstance(val[0], list):
                         batch_size_ratio = len(val[0])
                         val = [i for item in val for i in item]
                     ret[key] = np.concatenate(val, axis=0)
+                # Handle teacher voxel coords (dynamic keys like teacher_voxel_coords_s1, etc.)
+                elif key.startswith('teacher_voxel_coords_'):
+                    coors = []
+                    if isinstance(val[0], list):
+                        val = [i for item in val for i in item]
+                    for i, coor in enumerate(val):
+                        coor_pad = np.pad(coor, ((0, 0), (1, 0)), mode='constant', constant_values=i)
+                        coors.append(coor_pad)
+                    ret[key] = np.concatenate(coors, axis=0)
                 elif key in ['points', 'voxel_coords', 'radar_points', 'radar_voxel_coords']:
                     coors = []
                     if isinstance(val[0], list):

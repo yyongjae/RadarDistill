@@ -327,14 +327,7 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
        
 
         input_dict = {
-            'points_s10': points_s10,
-            'points_s9': points_s9,
-            'points_s8': points_s8,
-            'points_s7': points_s7,
-            'points_s6': points_s6,
-            'points_s5': points_s5,
-            'points_s4': points_s4,
-            'points_s3': points_s3,
+            'points': points,
             'radar_points': radar_points,
             'frame_id': Path(info['lidar_path']).stem,
             'metadata': {'token': info['token']}

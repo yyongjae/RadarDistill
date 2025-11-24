@@ -32,6 +32,8 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         if self.training and self.dataset_cfg.get('BALANCED_RESAMPLING', False):
             self.infos = self.balanced_infos_resampling(self.infos)
 
+        self._point_keep_ratio = getattr(self.dataset_cfg, 'POINT_KEEP_RATIO', 0.8)
+        self._point_subsample_seed = getattr(self.dataset_cfg, 'POINT_SUBSAMPLE_SEED', 0)
         self._debug_log_count = 0
         cfg_lidar_max = getattr(self.dataset_cfg, 'LIDAR_MAX_SWEEPS', None)
         cfg_sample_n_sweeps = None
@@ -133,6 +135,17 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         points = np.concatenate(sweep_points_list, axis=0)
         times = np.concatenate(sweep_times_list, axis=0).astype(points.dtype)
 
+        num_points = points.shape[0]
+        keep_ratio = getattr(self, '_point_keep_ratio', 0.8)
+        if num_points > 0 and 0.0 < keep_ratio < 1.0:
+            base_seed = getattr(self, '_point_subsample_seed', 0)
+            rng = np.random.RandomState(base_seed + index)
+            keep_count = int(num_points * keep_ratio)
+            if 0 < keep_count < num_points:
+                keep_indices = rng.choice(num_points, keep_count, replace=False)
+                points = points[keep_indices]
+                times = times[keep_indices]
+        # print(f"[DEBUG] points remove: {num_points} -> {points.shape[0]}")
         points = np.concatenate((points, times), axis=1)
         return points
 

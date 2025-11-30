@@ -427,6 +427,13 @@ class NuScenesDataset_Distill(DatasetTemplate_Distill):
         with open(output_path / 'metrics_summary.json', 'r') as f:
             metrics = json.load(f)
 
+        # [NEW] Custom Attribute Analysis
+        try:
+            from .nuscenes_eval_custom import custom_evaluation
+            custom_evaluation(nusc, nusc_annos['results'], str(output_path))
+        except Exception as e:
+            self.logger.warning(f"Custom evaluation failed: {e}")
+
         result_str, result_dict = nuscenes_utils.format_nuscene_results(metrics, self.class_names, version=eval_version)
         return result_str, result_dict
 

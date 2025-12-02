@@ -31,6 +31,13 @@ class PillarNet(Detector3DTemplate):
             if cur_name in self.no_grad_module:
                 cur_module.eval()
             batch_dict = cur_module(batch_dict)
+            
+            # Save intermediate features for visualization (evaluation only)
+            if not self.training:
+                # Save radar backbone 2D output
+                if cur_name == 'Radar_Distill' and 'radar_spatial_features_2d' in batch_dict:
+                    # Features are already in batch_dict, no need to do anything
+                    pass
 
         if self.training:
             if self.model_cfg.get('DISTILL', None) is None:
@@ -45,8 +52,10 @@ class PillarNet(Detector3DTemplate):
             }
             return ret_dict, tb_dict, disp_dict
         else:
-            pred_dicts, recall_dicts = self.post_processing(batch_dict)
-            return pred_dicts, recall_dicts
+            pred_dicts, recall_dicts, batch_dict = self.post_processing(batch_dict)
+            return pred_dicts, recall_dicts, batch_dict  # Return batch_dict for feature access
+
+
 
     
     def get_training_loss(self):
@@ -106,4 +115,4 @@ class PillarNet(Detector3DTemplate):
                 thresh_list=post_process_cfg.RECALL_THRESH_LIST
             )
 
-        return final_pred_dict, recall_dict
+        return final_pred_dict, recall_dict, batch_dict  # Return batch_dict for feature access

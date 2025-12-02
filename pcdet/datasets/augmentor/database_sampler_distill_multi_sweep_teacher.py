@@ -63,6 +63,7 @@ class DataBaseSampler_Distill_Multi_Sweep_Teacher(object):
 
     def __setstate__(self, d):
         self.__dict__.update(d)
+        self.logger = None  # Logger is not picklable, set to None in worker processes
 
     def __del__(self):
         if self.use_shared_memory:

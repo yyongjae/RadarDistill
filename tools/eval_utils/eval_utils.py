@@ -24,7 +24,7 @@ def statistics_info(cfg, ret_dict, metric, disp_dict):
         '(%d, %d) / %d' % (metric['recall_roi_%s' % str(min_thresh)], metric['recall_rcnn_%s' % str(min_thresh)], metric['gt_num'])
 
 
-def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=False, result_dir=None, bev_similarity_engines=None):
+def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=False, result_dir=None, bev_similarity_engines=None, umap_visualizers=None):
     result_dir.mkdir(parents=True, exist_ok=True)
 
     final_output_dir = result_dir / 'final_result' / 'data'
@@ -71,7 +71,7 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
             start_time = time.time()
 
         with torch.no_grad():
-            pred_dicts, ret_dict = model(batch_dict)
+            pred_dicts, ret_dict, batch_dict = model(batch_dict)  # Receive batch_dict from model
 
         disp_dict = {}
 
@@ -95,6 +95,11 @@ def eval_one_epoch(cfg, args, model, dataloader, epoch_id, logger, dist_test=Fal
         if bev_similarity_engines is not None:
             for engine in bev_similarity_engines:
                 engine.process_batch(batch_dict)
+        
+        # Process with UMAP visualizers if provided
+        if umap_visualizers is not None:
+            for visualizer in umap_visualizers:
+                visualizer.process_batch(batch_dict)
 
         annos = dataset.generate_prediction_dicts(
             batch_dict, pred_dicts, class_names,

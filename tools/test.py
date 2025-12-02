@@ -24,6 +24,12 @@ import matplotlib.patheffects as pe
 import math
 from matplotlib.path import Path as MplPath
 from tqdm import tqdm
+try:
+    import umap
+    UMAP_AVAILABLE = True
+except ImportError:
+    UMAP_AVAILABLE = False
+    print("Warning: umap-learn not installed. UMAP visualization will be disabled.")
 
 # ==============================
 # 공통 유틸 (from test_teacher.py)
@@ -97,8 +103,7 @@ def cka_rbf(x, y, debiased=False, sigma=None):
 
 
 class BEVSimilarityEngine:
-    def __init__(self, feature_name, feature_key_path, class_names, pc_range, logger, result_dir, pooling='center',
-                 save_scene_instance=False, max_scene_plots=99999, min_inst_for_plot=2):
+    def __init__(self, feature_name, feature_key_path, class_names, pc_range, logger, result_dir, pooling='avg', save_scene_instance=False, max_scene_plots=4, min_inst_for_plot=2):
         self.feature_name = feature_name
         self.feature_key_path = feature_key_path.split('.')
         self.class_names = class_names
@@ -201,81 +206,138 @@ class BEVSimilarityEngine:
         if not self.save_scene_instance or self.saved_sample_count >= self.max_scene_plots:
             return
 
-        # 최소 인스턴스 개수 조건을 만족하지 못하면 반환
-        if feats_C.shape[0] < self.min_inst_for_plot:
-            return
+        # 최소 인스턴스 개수 조건 제거 - 모든 샘플 저장
+        # if feats_C.shape[0] < self.min_inst_for_plot:
+        #     return
 
         # --- 저장 로직 ---
-        # 파일 이름으로 사용할 고유 샘플 토큰 가져오기
-        sample_token = meta_i.get('token', f'sample_{self.saved_sample_count:06d}')
-
         P = l2_normalize_rows(feats_C).detach().cpu()
         L = labels_0b.detach().cpu()
 
-        # 씬 이름으로 하위 폴더 생성
+        # 저장할 기본 폴더 설정 (씬별 하위 폴더 없음)
         base_output_dir = self.result_dir / 'similarity' / self.feature_name
-        inst_sim_dir = base_output_dir / 'instances' / scene_id
-        bev_vis_dir = base_output_dir / 'instances_bev' / scene_id
+        inst_sim_dir = base_output_dir / 'instances'
 
-        # 샘플 토큰을 파일 이름으로 사용
-        self._save_instance_similarity_for_scene(sample_token, scene_id, P, L, inst_sim_dir)
+        # 순차적인 번호를 파일 이름으로 사용 (1부터 시작)
+        file_idx_str = f"{self.saved_sample_count + 1:06d}"
+        self._save_instance_similarity_for_scene(file_idx_str, scene_id, P, L, inst_sim_dir)
+
+        self.saved_sample_count += 1
+
+    def _save_instance_data_with_zeros(self, scene_id, dummy_feat, dummy_label, meta, reason):
+        """Save zero-filled instance data for cases where feature extraction failed or no valid boxes"""
+        # 저장 옵션이 꺼져있거나, 최대 저장 개수를 넘었으면 반환
+        if not self.save_scene_instance or self.saved_sample_count >= self.max_scene_plots:
+            return
+
+        # Create single dummy feature and label
+        feats_C = dummy_feat.unsqueeze(0)  # [1, C]
+        labels_0b = dummy_label.unsqueeze(0)  # [1]
+        
+        # --- 저장 로직 ---
+        P = l2_normalize_rows(feats_C).detach().cpu()
+        L = labels_0b.detach().cpu()
+
+        # 저장할 기본 폴더 설정
+        base_output_dir = self.result_dir / 'similarity' / self.feature_name
+        inst_sim_dir = base_output_dir / 'instances'
+
+        # 순차적인 번호를 파일 이름으로 사용 (1부터 시작)
+        file_idx_str = f"{self.saved_sample_count + 1:06d}_zero_{reason}"
+        self._save_instance_similarity_for_scene(file_idx_str, scene_id, P, L, inst_sim_dir)
 
         self.saved_sample_count += 1
 
     def process_batch(self, batch_dict):
         # Dynamically get the feature from batch_dict using the key path
         bev = batch_dict
+        feature_extraction_failed = False
         try:
             for key in self.feature_key_path:
                 bev = bev[key]
         except (KeyError, TypeError):
-            return  # Silently skip if feature not found
+            feature_extraction_failed = True
+            bev = None
 
         gt_boxes = batch_dict.get('gt_boxes', None)
         metas = batch_dict.get('metadata', None)
-        if (bev is None) or (gt_boxes is None) or (metas is None): 
+        if (gt_boxes is None) or (metas is None): 
             return
         
         # Handle SparseConvTensor by converting to dense tensor
-        if not isinstance(bev, torch.Tensor):
+        if bev is not None and not isinstance(bev, torch.Tensor):
             if hasattr(bev, 'dense'):  # SparseConvTensor
                 bev = bev.dense()
             else:
-                return
+                feature_extraction_failed = True
+                bev = None
         
         # Debug: Log successful feature extraction
-        if not hasattr(self, '_success_logged'):
+        if not feature_extraction_failed and not hasattr(self, '_success_logged'):
             self.logger.info(f"[{self.feature_name}] Successfully extracted feature with shape {bev.shape}")
             self._success_logged = True
-        bev = bev.detach()
+        
+        if not feature_extraction_failed:
+            bev = bev.detach()
         gt_boxes = gt_boxes.detach()
-        B, C, H, W = bev.shape
+        
+        # Get feature dimensions from successful extraction or use default
+        if not feature_extraction_failed:
+            B, C, H, W = bev.shape
+        else:
+            B = gt_boxes.shape[0]
+            C, H, W = 256, 432, 432  # Default dimensions for missing features
+        
         for i in range(B):
             meta = metas[i]
             scene_id = self._get_scene_id(meta)
             boxes = gt_boxes[i]
             valid = boxes[:, -1] > 0
             boxes = boxes[valid]
-            if boxes.numel() == 0: continue
+            
+            # Handle cases with no valid boxes or feature extraction failure
+            if boxes.numel() == 0 or feature_extraction_failed:
+                # Create zero-filled dummy data for consistent processing
+                if feature_extraction_failed:
+                    # Create dummy features with zeros
+                    dummy_feat = torch.zeros(C, device=gt_boxes.device)
+                    dummy_label = torch.tensor([0], dtype=torch.long, device=gt_boxes.device)  # Use first class
+                    self._save_instance_data_with_zeros(scene_id, dummy_feat, dummy_label, meta, "feature_extraction_failed")
+                else:
+                    # Create dummy features for no boxes case
+                    dummy_feat = torch.zeros(C, device=gt_boxes.device)
+                    dummy_label = torch.tensor([0], dtype=torch.long, device=gt_boxes.device)  # Use first class
+                    self._save_instance_data_with_zeros(scene_id, dummy_feat, dummy_label, meta, "no_valid_boxes")
+                continue
+                
             feats_C = []
             labels_0b = []
             for j, box in enumerate(boxes):
-                feat = self._extract_feature_for_box(bev[i], box, self.pooling)
+                if feature_extraction_failed:
+                    # Use zero features when extraction failed
+                    feat = torch.zeros(C, device=gt_boxes.device)
+                else:
+                    feat = self._extract_feature_for_box(bev[i], box, self.pooling)
+                    
                 if feat is not None:
                     feats_C.append(feat)
                     labels_0b.append(int(box[-1]) - 1)
             
+            # Always process even if no features extracted successfully
             if len(feats_C) == 0:
+                # Create dummy features with zeros
+                dummy_feat = torch.zeros(C, device=gt_boxes.device)
+                dummy_label = torch.tensor([0], dtype=torch.long, device=gt_boxes.device)
+                self._save_instance_data_with_zeros(scene_id, dummy_feat, dummy_label, meta, "feature_extraction_all_failed")
                 continue
                 
             feats_C = torch.stack(feats_C)
             labels_0b = torch.tensor(labels_0b, dtype=torch.long, device=feats_C.device)
             
-            
             self._accumulate_class_sim(feats_C, labels_0b)
 
             # Save instance-level data for the current sample
-            self._save_instance_data(scene_id, feats_C, labels_0b, bev[i], boxes, meta)
+            self._save_instance_data(scene_id, feats_C, labels_0b, bev[i] if not feature_extraction_failed else None, boxes, meta)
 
     def _save_similarity_map(self, sim_sums, out_dir, file_prefix, title):
         valid_mask = self.sim_counts > 0
@@ -284,18 +346,16 @@ class BEVSimilarityEngine:
         np.fill_diagonal(S, 1.0)
         out_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save .npy
-        np.save(out_dir / f'{file_prefix}.npy', S)
-        
-        # Save visualization
-        fig, ax = plt.subplots(figsize=(0.6*self.num_classes+2, 0.6*self.num_classes+2))
-        im = ax.imshow(S, cmap='coolwarm', vmin=0.0, vmax=1.0) # CKA is typically in [0,1]
-        ax.set_xticks(range(self.num_classes)); ax.set_yticks(range(self.num_classes))
-        ax.set_xticklabels(self.class_names, rotation=45, ha='right')
-        ax.set_yticklabels(self.class_names)
-        ax.set_title(f'{title} (BEV features, 1x1 pooled)')
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        fig.tight_layout(); fig.savefig(out_dir / f'{file_prefix}.png', dpi=200); plt.close(fig)
+        # Save similarity data with metadata (no PNG generation)
+        save_data = {
+            'similarity_matrix': S,
+            'class_names': self.class_names,
+            'title': title,
+            'similarity_counts': self.sim_counts,
+            'feature_name': self.feature_name,
+            'pooling_method': self.pooling
+        }
+        np.save(out_dir / f'{file_prefix}.npy', save_data)
         self.logger.info(f"[Similarity] Saved {title} to {out_dir}")
 
     def _save_instance_similarity_for_scene(self, file_stem, scene_id, P, labels, out_dir):
@@ -306,22 +366,73 @@ class BEVSimilarityEngine:
         labels_sorted = labels_np[sort_idx]
         inst_ticks = [self.class_names[int(cls)] for cls in labels_sorted]
         out_dir.mkdir(parents=True, exist_ok=True)
-        fig = plt.figure(figsize=(min(10, max(6, 0.15*len(inst_ticks))), min(8, max(5, 0.15*len(inst_ticks)))))
-        plt.imshow(S_sorted, vmin=-1, vmax=1, cmap='coolwarm')
-        plt.title(f'Instance-level Similarity | scene={scene_id} | N={S_sorted.shape[0]}')
-        plt.xticks(range(len(inst_ticks)), inst_ticks, rotation=90, fontsize=6)
-        plt.yticks(range(len(inst_ticks)), inst_ticks, fontsize=6)
-        plt.colorbar(fraction=0.046, pad=0.04)
-        plt.tight_layout()
-        plt.savefig(out_dir / f'{file_stem}.png', dpi=200); plt.close(fig)
-        np.save(out_dir / f'{file_stem}.npy', S_sorted)
+        
+        # Ensure S_sorted is 2D
+        if S_sorted.ndim > 2:
+            S_sorted = S_sorted.squeeze()
+        if S_sorted.ndim == 0:  # Single value case
+            S_sorted = S_sorted.reshape(1, 1)
+        elif S_sorted.ndim == 1:  # 1D case
+            S_sorted = S_sorted.reshape(1, -1)
+        
+        # Save similarity matrix with metadata (no PNG generation)
+        save_data = {
+            'similarity_matrix': S_sorted,
+            'labels': labels_sorted,
+            'class_names': self.class_names,
+            'sample_id': file_stem,
+            'scene_id': scene_id,
+            'num_instances': S_sorted.shape[0]
+        }
+        np.save(out_dir / f'{file_stem}.npy', save_data)
+        
+        # Save sample-level class similarity map
+        self._save_sample_class_similarity_map(file_stem, scene_id, labels_np, out_dir)
+
+    def _save_sample_class_similarity_map(self, file_stem, scene_id, labels_np, out_dir):
+        """Create class similarity map for this specific sample"""
+        unique_classes = np.unique(labels_np)
+        # Remove minimum class condition - save all samples
+        # if len(unique_classes) < 2:
+        #     return  # Skip if only one class present
+            
+        # Create class-level similarity matrix for this sample
+        class_sim_matrix = np.zeros((self.num_classes, self.num_classes))
+        class_counts = np.zeros((self.num_classes, self.num_classes))
+        
+        # Count co-occurrences in this sample
+        for i in range(len(labels_np)):
+            for j in range(len(labels_np)):
+                if i != j:
+                    ci, cj = int(labels_np[i]), int(labels_np[j])
+                    if 0 <= ci < self.num_classes and 0 <= cj < self.num_classes:
+                        class_sim_matrix[ci, cj] = 1.0  # Co-occurrence indicator
+                        class_counts[ci, cj] = 1.0
+        
+        # Set diagonal to 1 for present classes
+        for cls in unique_classes:
+            if 0 <= cls < self.num_classes:
+                class_sim_matrix[cls, cls] = 1.0
+        
+        # Save class similarity data with metadata (no PNG generation)
+        class_sim_dir = out_dir.parent / 'class_similarity_per_sample'
+        class_sim_dir.mkdir(parents=True, exist_ok=True)
+        
+        class_save_data = {
+            'class_similarity_matrix': class_sim_matrix,
+            'unique_classes': unique_classes,
+            'class_names': self.class_names,
+            'sample_id': file_stem,
+            'scene_id': scene_id,
+            'num_unique_classes': len(unique_classes)
+        }
+        np.save(class_sim_dir / f'{file_stem}_class_sim.npy', class_save_data)
 
     def finalize(self, result_dir, save_class=True, dist_test=False):
         if dist_test:
-            from pcdet.utils import common_utils
             # 모든 GPU에서 수집된 scene_payloads를 rank 0으로 병합
             all_payloads = common_utils.merge_results_dist(self.scene_payloads, len(self.scene_payloads), tmpdir=result_dir / 'tmpdir')
-            if common_utils.get_rank() == 0:
+            if cfg.LOCAL_RANK == 0:
                 # 중복된 scene_id 제거 (각 GPU가 동일 scene의 다른 샘플을 볼 수 있으므로)
                 seen_scenes = set()
                 unique_payloads = []
@@ -345,8 +456,323 @@ class BEVSimilarityEngine:
             self._save_similarity_map(self.cka_rbf_sums, class_sim_dir, 'class_cka_rbf_similarity', f'RBF CKA ({self.feature_name})')
 
         # Log how many instance-level plots were saved in real-time
-        if self.save_scene_instance and common_utils.get_rank() == 0:
+        if self.save_scene_instance and cfg.LOCAL_RANK == 0:
             self.logger.info(f"[Similarity] Instance-level plots for all samples saved in real-time: {self.saved_sample_count} total samples.")
+
+
+class BEVUMAPVisualizer:
+    """Visualize BEV feature distribution using UMAP dimensionality reduction"""
+    def __init__(self, feature_name, feature_key_path, class_names, pc_range, logger, result_dir, 
+                 pooling='avg', n_neighbors=15, min_dist=0.1, n_components=2, max_samples=10000):
+        self.feature_name = feature_name
+        self.feature_key_path = feature_key_path.split('.')
+        self.class_names = class_names
+        self.num_classes = len(class_names)
+        self.pc_range = pc_range
+        self.logger = logger
+        self.result_dir = result_dir
+        self.pooling = pooling
+        
+        # UMAP parameters
+        self.n_neighbors = n_neighbors
+        self.min_dist = min_dist
+        self.n_components = n_components
+        self.max_samples = max_samples
+        
+        # Storage for features and labels
+        self.features_list = []
+        self.labels_list = []
+        self.sample_count = 0
+        
+        if not UMAP_AVAILABLE:
+            self.logger.warning(f"[{self.feature_name}] UMAP not available. Install with: pip install umap-learn")
+    
+    def _extract_feature_for_box(self, bev_feat_chw, box8, pooling):
+        """Extract feature for a single box (same as BEVSimilarityEngine)"""
+        C, H, W = bev_feat_chw.shape
+        x, y, z, dx, dy, dz, heading, cls = box8[:8]
+        row, col = world_to_bev_pixel(float(x), float(y), self.pc_range, H, W)
+        r_i = int(round(row)); c_i = int(round(col))
+        r_i = max(0, min(H-1, r_i)); c_i = max(0, min(W-1, c_i))
+        center_pixel_feature = bev_feat_chw[:, r_i, c_i]
+
+        # For avg or max pooling, use polygon mask
+        corners_xy = box_corners_world(float(x), float(y), float(dx), float(dy), float(heading))
+        mask, (rmin, rmax), (cmin, cmax) = polygon_mask_in_feature(corners_xy, self.pc_range, H, W)
+        
+        if mask is None or not mask.any():
+            return center_pixel_feature
+
+        slice_feat = bev_feat_chw[:, rmin:rmax+1, cmin:cmax+1]
+        mask_t = torch.from_numpy(mask.astype(np.bool_)).to(slice_feat.device)
+        masked = slice_feat[:, mask_t]  # [C, K]
+
+        if masked.numel() == 0:
+            return center_pixel_feature
+
+        if pooling == 'avg':
+            return masked.mean(dim=1)
+        elif pooling == 'max':
+            return torch.max(masked, dim=1).values
+        else:
+            return center_pixel_feature
+    
+    def process_batch(self, batch_dict):
+        """Collect features from a batch"""
+        if not UMAP_AVAILABLE or self.sample_count >= self.max_samples:
+            return
+        
+        # Extract BEV feature
+        bev = batch_dict
+        feature_extraction_failed = False
+        try:
+            for key in self.feature_key_path:
+                bev = bev[key]
+        except (KeyError, TypeError) as e:
+            feature_extraction_failed = True
+            bev = None
+            # Debug: Log available keys on first failure
+            if not hasattr(self, '_keys_logged'):
+                self.logger.warning(f"[{self.feature_name}] UMAP:wd Failed to extract feature with key path {'.'.join(self.feature_key_path)}")
+                self.logger.warning(f"[{self.feature_name}] UMAP: Available keys in batch_dict: {list(batch_dict.keys())}")
+                self._keys_logged = True
+        
+        gt_boxes = batch_dict.get('gt_boxes', None)
+        if (gt_boxes is None) or feature_extraction_failed:
+            return
+        
+        # Handle SparseConvTensor
+        if bev is not None and not isinstance(bev, torch.Tensor):
+            if hasattr(bev, 'dense'):
+                bev = bev.dense()
+            else:
+                return
+        
+        if not hasattr(self, '_success_logged'):
+            self.logger.info(f"[{self.feature_name}] UMAP: Successfully extracted feature with shape {bev.shape}")
+            self._success_logged = True
+        
+        bev = bev.detach()
+        gt_boxes = gt_boxes.detach()
+        B, C, H, W = bev.shape
+        
+        for i in range(B):
+            if self.sample_count >= self.max_samples:
+                break
+                
+            boxes = gt_boxes[i]
+            valid = boxes[:, -1] > 0
+            boxes = boxes[valid]
+            
+            if boxes.numel() == 0:
+                continue
+            
+            for j, box in enumerate(boxes):
+                if self.sample_count >= self.max_samples:
+                    break
+                    
+                feat = self._extract_feature_for_box(bev[i], box, self.pooling)
+                if feat is not None:
+                    self.features_list.append(feat.cpu().numpy())
+                    self.labels_list.append(int(box[-1]) - 1)  # 0-indexed class
+                    self.sample_count += 1
+    
+    def finalize(self, result_dir, dist_test=False):
+        """Apply UMAP and generate visualizations"""
+        if not UMAP_AVAILABLE:
+            return
+        
+        if dist_test:
+            # Merge features from all GPUs
+            all_features = common_utils.merge_results_dist(self.features_list, len(self.features_list), 
+                                                          tmpdir=result_dir / 'tmpdir')
+            all_labels = common_utils.merge_results_dist(self.labels_list, len(self.labels_list),
+                                                        tmpdir=result_dir / 'tmpdir')
+            if cfg.LOCAL_RANK == 0:
+                self.features_list = all_features[:self.max_samples]
+                self.labels_list = all_labels[:self.max_samples]
+            else:
+                return
+        
+        if len(self.features_list) < 2:
+            self.logger.warning(f"[{self.feature_name}] UMAP: Not enough samples ({len(self.features_list)})")
+            return
+        
+        self.logger.info(f"[{self.feature_name}] UMAP: Processing {len(self.features_list)} samples...")
+        
+        # Convert to numpy arrays
+        features = np.array(self.features_list)  # [N, C]
+        labels = np.array(self.labels_list)  # [N]
+        
+        # Apply UMAP
+        self.logger.info(f"[{self.feature_name}] UMAP: Applying UMAP (n_neighbors={self.n_neighbors}, "
+                        f"min_dist={self.min_dist}, n_components={self.n_components})...")
+        
+        reducer = umap.UMAP(
+            n_neighbors=self.n_neighbors,
+            min_dist=self.min_dist,
+            n_components=self.n_components,
+            random_state=42,
+            verbose=False
+        )
+        
+        embedding = reducer.fit_transform(features)
+        
+        # Create output directory
+        umap_dir = result_dir / 'umap' / self.feature_name
+        umap_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Save raw data
+        save_data = {
+            'embedding': embedding,
+            'labels': labels,
+            'class_names': self.class_names,
+            'feature_name': self.feature_name,
+            'n_samples': len(features),
+            'umap_params': {
+                'n_neighbors': self.n_neighbors,
+                'min_dist': self.min_dist,
+                'n_components': self.n_components
+            }
+        }
+        np.save(umap_dir / 'umap_data.npy', save_data)
+        
+        # Generate visualizations
+        self._plot_umap(embedding, labels, umap_dir)
+        
+        self.logger.info(f"[{self.feature_name}] UMAP: Visualization saved to {umap_dir}")
+    
+    def _plot_umap(self, embedding, labels, output_dir):
+        """Generate UMAP scatter plots"""
+        # Define colors for each class
+        colors = plt.cm.tab10(np.linspace(0, 1, self.num_classes))
+        
+        if self.n_components == 2:
+            # 2D scatter plot
+            fig, ax = plt.subplots(figsize=(12, 10))
+            
+            for cls_idx in range(self.num_classes):
+                mask = labels == cls_idx
+                if mask.sum() > 0:
+                    ax.scatter(
+                        embedding[mask, 0], 
+                        embedding[mask, 1],
+                        c=[colors[cls_idx]], 
+                        label=self.class_names[cls_idx],
+                        alpha=0.6,
+                        s=20,
+                        edgecolors='none'
+                    )
+            
+            ax.set_xlabel('UMAP Dimension 1', fontsize=12)
+            ax.set_ylabel('UMAP Dimension 2', fontsize=12)
+            ax.set_title(f'UMAP Visualization: {self.feature_name}\n'
+                        f'(n_samples={len(labels)}, n_neighbors={self.n_neighbors}, min_dist={self.min_dist})',
+                        fontsize=14)
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+            ax.grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(output_dir / 'umap_2d.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Also create interactive HTML plot using plotly if available
+            try:
+                import plotly.graph_objects as go
+                
+                fig = go.Figure()
+                for cls_idx in range(self.num_classes):
+                    mask = labels == cls_idx
+                    if mask.sum() > 0:
+                        fig.add_trace(go.Scatter(
+                            x=embedding[mask, 0],
+                            y=embedding[mask, 1],
+                            mode='markers',
+                            name=self.class_names[cls_idx],
+                            marker=dict(size=5, opacity=0.6),
+                            text=[self.class_names[cls_idx]] * mask.sum(),
+                            hovertemplate='%{text}<br>x: %{x:.2f}<br>y: %{y:.2f}<extra></extra>'
+                        ))
+                
+                fig.update_layout(
+                    title=f'UMAP Visualization: {self.feature_name}',
+                    xaxis_title='UMAP Dimension 1',
+                    yaxis_title='UMAP Dimension 2',
+                    hovermode='closest',
+                    width=1200,
+                    height=900
+                )
+                
+                fig.write_html(output_dir / 'umap_2d_interactive.html')
+            except ImportError:
+                pass  # plotly not available
+        
+        elif self.n_components == 3:
+            # 3D scatter plot
+            fig = plt.figure(figsize=(14, 10))
+            ax = fig.add_subplot(111, projection='3d')
+            
+            for cls_idx in range(self.num_classes):
+                mask = labels == cls_idx
+                if mask.sum() > 0:
+                    ax.scatter(
+                        embedding[mask, 0],
+                        embedding[mask, 1],
+                        embedding[mask, 2],
+                        c=[colors[cls_idx]],
+                        label=self.class_names[cls_idx],
+                        alpha=0.6,
+                        s=20,
+                        edgecolors='none'
+                    )
+            
+            ax.set_xlabel('UMAP Dimension 1', fontsize=12)
+            ax.set_ylabel('UMAP Dimension 2', fontsize=12)
+            ax.set_zlabel('UMAP Dimension 3', fontsize=12)
+            ax.set_title(f'UMAP Visualization: {self.feature_name}\n'
+                        f'(n_samples={len(labels)}, n_neighbors={self.n_neighbors}, min_dist={self.min_dist})',
+                        fontsize=14)
+            ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+            
+            plt.tight_layout()
+            plt.savefig(output_dir / 'umap_3d.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Interactive 3D plot with plotly
+            try:
+                import plotly.graph_objects as go
+                
+                fig = go.Figure()
+                for cls_idx in range(self.num_classes):
+                    mask = labels == cls_idx
+                    if mask.sum() > 0:
+                        fig.add_trace(go.Scatter3d(
+                            x=embedding[mask, 0],
+                            y=embedding[mask, 1],
+                            z=embedding[mask, 2],
+                            mode='markers',
+                            name=self.class_names[cls_idx],
+                            marker=dict(size=3, opacity=0.6),
+                            text=[self.class_names[cls_idx]] * mask.sum(),
+                            hovertemplate='%{text}<br>x: %{x:.2f}<br>y: %{y:.2f}<br>z: %{z:.2f}<extra></extra>'
+                        ))
+                
+                fig.update_layout(
+                    title=f'UMAP Visualization: {self.feature_name}',
+                    scene=dict(
+                        xaxis_title='UMAP Dimension 1',
+                        yaxis_title='UMAP Dimension 2',
+                        zaxis_title='UMAP Dimension 3'
+                    ),
+                    hovermode='closest',
+                    width=1200,
+                    height=900
+                )
+                
+                fig.write_html(output_dir / 'umap_3d_interactive.html')
+            except ImportError:
+                pass  # plotly not available
+
 
 def parse_config():
     parser = argparse.ArgumentParser(description='arg parser')
@@ -373,7 +799,7 @@ def parse_config():
     parser.add_argument('--cal_params', action='store_true', default=False, help='')
 
     # Arguments for similarity map generation
-    parser.add_argument('--model_type', type=str, default='student', choices=['student', 'baseline'],
+    parser.add_argument('--model_type', type=str, default='student', choices=['student', 'baseline', 'teacher'],
                         help='Type of the model to determine which features to analyze.')
     parser.add_argument('--features_to_analyze', type=str, default=None,
                         help='Comma-separated list of features to analyze, or "all".')
@@ -388,6 +814,19 @@ def parse_config():
                         help='Maximum number of instance map plots to save')
     parser.add_argument('--min_instances_per_scene_plot', type=int, default=2,
                         help='Minimum number of instances required to save an instance map')
+    
+    # Arguments for UMAP visualization
+    parser.add_argument('--save_umap_visualization', action='store_true', default=False,
+                        help='Generate UMAP visualization of BEV features')
+    parser.add_argument('--umap_n_neighbors', type=int, default=15,
+                        help='UMAP n_neighbors parameter (default: 15)')
+    parser.add_argument('--umap_min_dist', type=float, default=0.1,
+                        help='UMAP min_dist parameter (default: 0.1)')
+    parser.add_argument('--umap_n_components', type=int, default=2, choices=[2, 3],
+                        help='UMAP n_components: 2 for 2D or 3 for 3D visualization (default: 2)')
+    parser.add_argument('--umap_max_samples', type=int, default=10000,
+                        help='Maximum number of samples to collect for UMAP (default: 10000)')
+
 
     args = parser.parse_args()
 
@@ -410,7 +849,7 @@ def parse_config():
     return args, cfg
 
 
-def eval_single_ckpt(model, test_loader, args, eval_output_dir, logger, epoch_id, dist_test=False, sim_engines=None):
+def eval_single_ckpt(model, test_loader, args, eval_output_dir, logger, epoch_id, dist_test=False, sim_engines=None, umap_visualizers=None):
     # load checkpoint
     model.load_params_from_file(filename=args.ckpt, logger=logger, to_cpu=dist_test, 
                                 pre_trained_path=args.pretrained_model)
@@ -420,7 +859,7 @@ def eval_single_ckpt(model, test_loader, args, eval_output_dir, logger, epoch_id
     # start evaluation
     eval_utils.eval_one_epoch(
         cfg, args, model, test_loader, epoch_id, logger, dist_test=dist_test,
-        result_dir=eval_output_dir, bev_similarity_engines=sim_engines
+        result_dir=eval_output_dir, bev_similarity_engines=sim_engines, umap_visualizers=umap_visualizers
     )
 
     if sim_engines:
@@ -429,6 +868,13 @@ def eval_single_ckpt(model, test_loader, args, eval_output_dir, logger, epoch_id
             engine.finalize(eval_output_dir, save_class=args.save_class_similarity, dist_test=dist_test)
         if cfg.LOCAL_RANK == 0:
             logger.info("All similarity results saved successfully!")
+    
+    if umap_visualizers:
+        logger.info("Generating UMAP visualizations for all features...")
+        for visualizer in umap_visualizers:
+            visualizer.finalize(eval_output_dir, dist_test=dist_test)
+        if cfg.LOCAL_RANK == 0:
+            logger.info("All UMAP visualizations saved successfully!")
 
 def get_no_evaluated_ckpt(ckpt_dir, ckpt_record_file, args):
     ckpt_list = glob.glob(os.path.join(ckpt_dir, '*checkpoint_epoch_*.pth'))
@@ -448,7 +894,7 @@ def get_no_evaluated_ckpt(ckpt_dir, ckpt_record_file, args):
     return -1, None
 
 
-def repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir, dist_test=False, sim_engines=None):
+def repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir, dist_test=False, sim_engines=None, umap_visualizers=None):
     # evaluated ckpt record
     ckpt_record_file = eval_output_dir / ('eval_list_%s.txt' % cfg.DATA_CONFIG.DATA_SPLIT['test'])
     with open(ckpt_record_file, 'a'):
@@ -485,7 +931,7 @@ def repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir
         cur_result_dir = eval_output_dir / ('epoch_%s' % cur_epoch_id) / cfg.DATA_CONFIG.DATA_SPLIT['test']
         tb_dict = eval_utils.eval_one_epoch(
             cfg, args, model, test_loader, cur_epoch_id, logger, dist_test=dist_test,
-            result_dir=cur_result_dir, bev_similarity_engines=sim_engines
+            result_dir=cur_result_dir, bev_similarity_engines=sim_engines, umap_visualizers=umap_visualizers
         )
 
         # Finalize and save similarity maps
@@ -495,6 +941,14 @@ def repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir
                 engine.finalize(eval_output_dir, save_class=args.save_class_similarity, dist_test=dist_test)
             if cfg.LOCAL_RANK == 0:
                 logger.info("All similarity results saved successfully!")
+        
+        # Finalize and save UMAP visualizations
+        if umap_visualizers:
+            logger.info("Generating UMAP visualizations for all features...")
+            for visualizer in umap_visualizers:
+                visualizer.finalize(eval_output_dir, dist_test=dist_test)
+            if cfg.LOCAL_RANK == 0:
+                logger.info("All UMAP visualizations saved successfully!")
 
         if cfg.LOCAL_RANK == 0:
             for key, val in tb_dict.items():
@@ -582,6 +1036,10 @@ def main():
             'high_radar_bev': 'radar_spatial_features_2d', 
             'high_radar_bev_8x': 'radar_spatial_features_2d_8x',
         },
+        'teacher': {
+            'low_lidar_bev': 'spatial_features_2d',
+            'high_lidar_bev': 'multi_scale_2d_features.x_conv4',
+        }
     }
 
     features_to_run = []
@@ -612,12 +1070,39 @@ def main():
                 sim_engines.append(engine)
             else:
                 logger.warning(f"Feature '{feature_name}' not defined for model type '{args.model_type}'. Skipping.")
+    
+    # Create UMAP visualizers if requested
+    umap_visualizers = []
+    if args.save_umap_visualization and features_to_run:
+        logger.info(f"Preparing UMAP visualizers for features: {features_to_run}")
+        all_feature_maps = feature_map_definitions.get(args.model_type, {})
+        for feature_name in features_to_run:
+            if feature_name in all_feature_maps:
+                visualizer = BEVUMAPVisualizer(
+                    feature_name=feature_name,
+                    feature_key_path=all_feature_maps[feature_name],
+                    class_names=cfg.CLASS_NAMES,
+                    pc_range=cfg.DATA_CONFIG.POINT_CLOUD_RANGE,
+                    logger=logger,
+                    result_dir=eval_output_dir,
+                    pooling=args.similarity_pooling,
+                    n_neighbors=args.umap_n_neighbors,
+                    min_dist=args.umap_min_dist,
+                    n_components=args.umap_n_components,
+                    max_samples=args.umap_max_samples
+                )
+                umap_visualizers.append(visualizer)
+            else:
+                logger.warning(f"Feature '{feature_name}' not defined for model type '{args.model_type}'. Skipping.")
 
     with torch.no_grad():
         if args.eval_all:
-            repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir, dist_test=dist_test, sim_engines=sim_engines)
+            repeat_eval_ckpt(model, test_loader, args, eval_output_dir, logger, ckpt_dir, dist_test=dist_test, 
+                           sim_engines=sim_engines, umap_visualizers=umap_visualizers)
         else:
-            eval_single_ckpt(model, test_loader, args, eval_output_dir, logger, epoch_id, dist_test=dist_test, sim_engines=sim_engines)
+            eval_single_ckpt(model, test_loader, args, eval_output_dir, logger, epoch_id, dist_test=dist_test, 
+                           sim_engines=sim_engines, umap_visualizers=umap_visualizers)
+
 
 
 if __name__ == '__main__':

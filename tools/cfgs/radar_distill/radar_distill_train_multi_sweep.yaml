@@ -13,9 +13,6 @@ DATA_CONFIG:
         DISABLE_AUG_LIST: ['placeholder']
         AUG_CONFIG_LIST:
             - NAME: gt_sampling_distill
-              SAMPLE_N_SWEEPS: 1
-              TIMESTAMP_IDX: -1
-              LIDAR_MAX_SWEEPS: 1
               DB_INFO_PATH:
                 - nuscenes_dbinfos_10sweeps_with_radar_withvelo.pkl
               PREPARE: {
@@ -99,47 +96,16 @@ MODEL:
 
     RADAR_BACKBONE_2D:
         NAME: Radar_Distill_Multi_Sweep_Teacher
-        # Teacher sweep #
+        
+        # ===== Gating Ver5 (Object-wise RKG) Parameters =====
         NUM_TEACHERS: 3
-        GATE_K: 2
-        CAPACITY_FACTOR: 1.25
-        GATING_DOWNSAMPLE: 2  # Downsample gating by 4x (180→45) - balance between memory and accuracy
-        GATER:
-          use_runtime_assert: True
-        # Gating loss weights (V3 style: all OFF)
-        GATE_LB_COEFF: 0.05
-        GATE_ENT_COEFF: 0.0
-        GATE_TV_COEFF: 0.0
+        GATE_TEMP: 0.1  # Softmax temperature (lower = sharper selection)
+        BASELINE_CHECKPOINT: /home/yongjae/4drkd/RadarDistill/output/radar_distill/radar_distill_train/baseline_b8/ckpt/checkpoint_epoch_40.pth
         
-        # Heuristic gating weights (V4 production)
-        GATE_ALPHA_ADV: 1.0
-        GATE_BETA_BAND: 0.5
-        GATE_GAMMA_UCB: 0.1
-        GATE_BAND_L: 0.05
-        GATE_BAND_H: 0.20
-        
-        # Router (V4 production: Heuristic + Learned)
-        GATE_W_HEUR: 0.0
-        GATE_W_LEAR: 1.0
-        GATE_ROUTER_SPATIAL: True
-        GATE_ROUTER_HIDDEN: 24
-        
-        # EMA settings
-        GATE_USE_ADAPTER: True  # Disable adapter to save memory
-        GATE_EMA_MOMENTUM: 0.99
-        
-        # V4 features (production)
-        GATE_USE_POS: True
-        GATE_USE_CONF: False
-        GATE_USE_ENTROPY: False
-        GATE_TIME_NORMALIZE: False
-        
-        # Paper visualization
-        VIS_DIR: './output/visualizations'
-
+        # ===== Network Architecture =====
         LAYER_NUMS: [5, 5]
-        LAYER_STRIDES: [1,2]
-        NUM_FILTERS: [ 256, 256 ]
+        LAYER_STRIDES: [1, 2]
+        NUM_FILTERS: [256, 256]
         UPSAMPLE_STRIDES: [1, 2]
         NUM_UPSAMPLE_FILTERS: [128, 128]
         VOXEL_SIZE: [0.075, 0.075, 8.0]

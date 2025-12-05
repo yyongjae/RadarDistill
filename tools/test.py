@@ -463,7 +463,8 @@ class BEVSimilarityEngine:
 class BEVUMAPVisualizer:
     """Visualize BEV feature distribution using UMAP dimensionality reduction"""
     def __init__(self, feature_name, feature_key_path, class_names, pc_range, logger, result_dir, 
-                 pooling='avg', n_neighbors=15, min_dist=0.1, n_components=2, max_samples=10000):
+                 pooling='avg', n_neighbors=15, min_dist=0.1, n_components=2, max_samples=10000,
+                 tsne_perplexity=30.0, tsne_n_iter=1000):
         self.feature_name = feature_name
         self.feature_key_path = feature_key_path.split('.')
         self.class_names = class_names
@@ -478,6 +479,10 @@ class BEVUMAPVisualizer:
         self.min_dist = min_dist
         self.n_components = n_components
         self.max_samples = max_samples
+        
+        # t-SNE parameters
+        self.tsne_perplexity = tsne_perplexity
+        self.tsne_n_iter = tsne_n_iter
         
         # Storage for features and labels
         self.features_list = []
@@ -578,7 +583,7 @@ class BEVUMAPVisualizer:
                     self.sample_count += 1
     
     def finalize(self, result_dir, dist_test=False):
-        """Apply UMAP and generate visualizations"""
+        """Apply t-SNE and generate visualizations"""
         if not UMAP_AVAILABLE:
             return
         
@@ -598,52 +603,66 @@ class BEVUMAPVisualizer:
             self.logger.warning(f"[{self.feature_name}] UMAP: Not enough samples ({len(self.features_list)})")
             return
         
-        self.logger.info(f"[{self.feature_name}] UMAP: Processing {len(self.features_list)} samples...")
+        self.logger.info(f"[{self.feature_name}] Dimensionality Reduction: Processing {len(self.features_list)} samples...")
         
         # Convert to numpy arrays
         features = np.array(self.features_list)  # [N, C]
         labels = np.array(self.labels_list)  # [N]
         
-        # Apply UMAP
-        self.logger.info(f"[{self.feature_name}] UMAP: Applying UMAP (n_neighbors={self.n_neighbors}, "
-                        f"min_dist={self.min_dist}, n_components={self.n_components})...")
-        
-        reducer = umap.UMAP(
-            n_neighbors=self.n_neighbors,
-            min_dist=self.min_dist,
-            n_components=self.n_components,
-            random_state=42,
-            verbose=False
-        )
-        
-        embedding = reducer.fit_transform(features)
-        
         # Create output directory
         umap_dir = result_dir / 'umap' / self.feature_name
         umap_dir.mkdir(parents=True, exist_ok=True)
         
-        # Save raw data
-        save_data = {
-            'embedding': embedding,
-            'labels': labels,
-            'class_names': self.class_names,
-            'feature_name': self.feature_name,
-            'n_samples': len(features),
-            'umap_params': {
-                'n_neighbors': self.n_neighbors,
-                'min_dist': self.min_dist,
-                'n_components': self.n_components
-            }
-        }
-        np.save(umap_dir / 'umap_data.npy', save_data)
+        # Import t-SNE
+        try:
+            from sklearn.manifold import TSNE
+            tsne_available = True
+        except ImportError:
+            tsne_available = False
+            self.logger.warning(f"[{self.feature_name}] t-SNE not available (sklearn not installed)")
         
-        # Generate visualizations
-        self._plot_umap(embedding, labels, umap_dir)
-        
-        self.logger.info(f"[{self.feature_name}] UMAP: Visualization saved to {umap_dir}")
+        # Generate visualizations for different sample counts
+        sample_counts = [5000, 10000]
+        for n_samples in sample_counts:
+            if len(features) < n_samples:
+                self.logger.info(f"[{self.feature_name}] Skipping {n_samples} samples (only {len(features)} available)")
+                continue
+            
+            self.logger.info(f"[{self.feature_name}] Generating visualizations for {n_samples} samples...")
+            
+            # Subsample features and labels
+            features_subset = features[:n_samples]
+            labels_subset = labels[:n_samples]
+            
+            # ========== t-SNE ==========
+            if tsne_available:
+                self.logger.info(f"[{self.feature_name}] Applying t-SNE (perplexity={self.tsne_perplexity}, n_iter={self.tsne_n_iter}, n_components={self.n_components})...")
+                
+                # t-SNE parameters
+                # Adjust perplexity for small datasets if needed, but respect user setting if possible
+                perplexity = min(self.tsne_perplexity, n_samples // 4)
+                if perplexity < self.tsne_perplexity:
+                    self.logger.warning(f"[{self.feature_name}] t-SNE perplexity adjusted from {self.tsne_perplexity} to {perplexity} due to small sample size")
+                
+                reducer_tsne = TSNE(
+                    n_components=self.n_components,
+                    perplexity=perplexity,
+                    random_state=42,
+                    n_iter=self.tsne_n_iter,
+                    verbose=0
+                )
+                
+                embedding_tsne = reducer_tsne.fit_transform(features_subset)
+                
+                # Generate t-SNE visualizations
+                self._plot_umap(embedding_tsne, labels_subset, umap_dir, suffix=f'_{n_samples}_tsne', method='t-SNE')
+                
+                self.logger.info(f"[{self.feature_name}] t-SNE visualization for {n_samples} samples saved")
+            
+            self.logger.info(f"[{self.feature_name}] All visualizations for {n_samples} samples completed")
     
-    def _plot_umap(self, embedding, labels, output_dir):
-        """Generate UMAP scatter plots"""
+    def _plot_umap(self, embedding, labels, output_dir, suffix='', method='UMAP'):
+        """Generate dimensionality reduction scatter plots"""
         # Define colors for each class
         colors = plt.cm.tab10(np.linspace(0, 1, self.num_classes))
         
@@ -664,16 +683,16 @@ class BEVUMAPVisualizer:
                         edgecolors='none'
                     )
             
-            ax.set_xlabel('UMAP Dimension 1', fontsize=12)
-            ax.set_ylabel('UMAP Dimension 2', fontsize=12)
-            ax.set_title(f'UMAP Visualization: {self.feature_name}\n'
-                        f'(n_samples={len(labels)}, n_neighbors={self.n_neighbors}, min_dist={self.min_dist})',
+            ax.set_xlabel(f'{method} Dimension 1', fontsize=12)
+            ax.set_ylabel(f'{method} Dimension 2', fontsize=12)
+            ax.set_title(f'{method} Visualization: {self.feature_name}\n'
+                        f'(n_samples={len(labels)})',
                         fontsize=14)
             ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
             ax.grid(True, alpha=0.3)
             
             plt.tight_layout()
-            plt.savefig(output_dir / 'umap_2d.png', dpi=300, bbox_inches='tight')
+            plt.savefig(output_dir / f'umap_2d{suffix}.png', dpi=300, bbox_inches='tight')
             plt.close()
             
             # Also create interactive HTML plot using plotly if available
@@ -695,15 +714,15 @@ class BEVUMAPVisualizer:
                         ))
                 
                 fig.update_layout(
-                    title=f'UMAP Visualization: {self.feature_name}',
-                    xaxis_title='UMAP Dimension 1',
-                    yaxis_title='UMAP Dimension 2',
+                    title=f'{method} Visualization: {self.feature_name}',
+                    xaxis_title=f'{method} Dimension 1',
+                    yaxis_title=f'{method} Dimension 2',
                     hovermode='closest',
                     width=1200,
                     height=900
                 )
                 
-                fig.write_html(output_dir / 'umap_2d_interactive.html')
+                fig.write_html(output_dir / f'umap_2d_interactive{suffix}.html')
             except ImportError:
                 pass  # plotly not available
         
@@ -726,16 +745,16 @@ class BEVUMAPVisualizer:
                         edgecolors='none'
                     )
             
-            ax.set_xlabel('UMAP Dimension 1', fontsize=12)
-            ax.set_ylabel('UMAP Dimension 2', fontsize=12)
-            ax.set_zlabel('UMAP Dimension 3', fontsize=12)
-            ax.set_title(f'UMAP Visualization: {self.feature_name}\n'
-                        f'(n_samples={len(labels)}, n_neighbors={self.n_neighbors}, min_dist={self.min_dist})',
+            ax.set_xlabel(f'{method} Dimension 1', fontsize=12)
+            ax.set_ylabel(f'{method} Dimension 2', fontsize=12)
+            ax.set_zlabel(f'{method} Dimension 3', fontsize=12)
+            ax.set_title(f'{method} Visualization: {self.feature_name}\n'
+                        f'(n_samples={len(labels)})',
                         fontsize=14)
             ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
             
             plt.tight_layout()
-            plt.savefig(output_dir / 'umap_3d.png', dpi=300, bbox_inches='tight')
+            plt.savefig(output_dir / f'umap_3d{suffix}.png', dpi=300, bbox_inches='tight')
             plt.close()
             
             # Interactive 3D plot with plotly
@@ -758,20 +777,22 @@ class BEVUMAPVisualizer:
                         ))
                 
                 fig.update_layout(
-                    title=f'UMAP Visualization: {self.feature_name}',
+                    title=f'{method} Visualization: {self.feature_name}',
                     scene=dict(
-                        xaxis_title='UMAP Dimension 1',
-                        yaxis_title='UMAP Dimension 2',
-                        zaxis_title='UMAP Dimension 3'
+                        xaxis_title=f'{method} Dimension 1',
+                        yaxis_title=f'{method} Dimension 2',
+                        zaxis_title=f'{method} Dimension 3'
                     ),
                     hovermode='closest',
                     width=1200,
                     height=900
                 )
                 
-                fig.write_html(output_dir / 'umap_3d_interactive.html')
+                fig.write_html(output_dir / f'umap_3d_interactive{suffix}.html')
             except ImportError:
                 pass  # plotly not available
+
+
 
 
 def parse_config():
@@ -808,7 +829,7 @@ def parse_config():
                         help='Save accumulated class-class similarity map for the entire test set')
     parser.add_argument('--save_scene_instance_similarity', action='store_true', default=False,
                         help='Save instance-level similarity map for the first sample of each scene')
-    parser.add_argument('--similarity_pooling', type=str, default='avg',
+    parser.add_argument('--similarity_pooling', type=str, default='max',
                         choices=['avg', 'max'], help='Pooling method for 1x1 bbox features (avg or max)')
     parser.add_argument('--max_scene_instance_plots', type=int, default=99999,
                         help='Maximum number of instance map plots to save')
@@ -826,6 +847,12 @@ def parse_config():
                         help='UMAP n_components: 2 for 2D or 3 for 3D visualization (default: 2)')
     parser.add_argument('--umap_max_samples', type=int, default=10000,
                         help='Maximum number of samples to collect for UMAP (default: 10000)')
+    
+    # Arguments for t-SNE visualization
+    parser.add_argument('--tsne_perplexity', type=float, default=70.0,
+                        help='t-SNE perplexity parameter')
+    parser.add_argument('--tsne_n_iter', type=int, default=2000,
+                        help='t-SNE number of iterations')
 
 
     args = parser.parse_args()
@@ -870,11 +897,11 @@ def eval_single_ckpt(model, test_loader, args, eval_output_dir, logger, epoch_id
             logger.info("All similarity results saved successfully!")
     
     if umap_visualizers:
-        logger.info("Generating UMAP visualizations for all features...")
+        logger.info("Generating UMAP/t-SNE visualizations for all features...")
         for visualizer in umap_visualizers:
             visualizer.finalize(eval_output_dir, dist_test=dist_test)
         if cfg.LOCAL_RANK == 0:
-            logger.info("All UMAP visualizations saved successfully!")
+            logger.info("All visualizations saved successfully!")
 
 def get_no_evaluated_ckpt(ckpt_dir, ckpt_record_file, args):
     ckpt_list = glob.glob(os.path.join(ckpt_dir, '*checkpoint_epoch_*.pth'))
@@ -976,7 +1003,7 @@ def main():
         dist_test = True
 
     if args.batch_size is None:
-        args.batch_size = cfg.OPTIMIZATION.BATCH_SIZE_PER_GPU
+        args.batch_size = 32
     else:
         assert args.batch_size % total_gpus == 0, 'Batch size should match the number of gpus'
         args.batch_size = args.batch_size // total_gpus
@@ -1089,7 +1116,9 @@ def main():
                     n_neighbors=args.umap_n_neighbors,
                     min_dist=args.umap_min_dist,
                     n_components=args.umap_n_components,
-                    max_samples=args.umap_max_samples
+                    max_samples=args.umap_max_samples,
+                    tsne_perplexity=args.tsne_perplexity,
+                    tsne_n_iter=args.tsne_n_iter
                 )
                 umap_visualizers.append(visualizer)
             else:

@@ -63,10 +63,12 @@ class DataBaseSampler_Distill_Multi_Sweep_Teacher(object):
 
     def __setstate__(self, d):
         self.__dict__.update(d)
+        self.logger = None  # Logger is not picklable, set to None in worker processes
 
     def __del__(self):
         if self.use_shared_memory:
-            self.logger.info('Deleting GT database from shared memory')
+            if self.logger:
+                self.logger.info('Deleting GT database from shared memory')
             cur_rank, num_gpus = common_utils.get_dist_info()
             sa_key = self.sampler_cfg.DB_DATA_PATH[0]
             if cur_rank % num_gpus == 0 and os.path.exists(f"/dev/shm/{sa_key}"):
@@ -74,10 +76,12 @@ class DataBaseSampler_Distill_Multi_Sweep_Teacher(object):
 
             if num_gpus > 1:
                 dist.barrier()
-            self.logger.info('GT database has been removed from shared memory')
+            if self.logger:
+                self.logger.info('GT database has been removed from shared memory')
 
     def load_db_to_shared_memory(self):
-        self.logger.info('Loading GT database to shared memory')
+        if self.logger:
+            self.logger.info('Loading GT database to shared memory')
         cur_rank, world_size, num_gpus = common_utils.get_dist_info(return_gpu_per_machine=True)
 
         assert self.sampler_cfg.DB_DATA_PATH.__len__() == 1, 'Current only support single DB_DATA'
@@ -90,7 +94,8 @@ class DataBaseSampler_Distill_Multi_Sweep_Teacher(object):
             
         if num_gpus > 1:
             dist.barrier()
-        self.logger.info('GT database has been saved to shared memory')
+        if self.logger:
+            self.logger.info('GT database has been saved to shared memory')
         return sa_key
 
     def filter_by_difficulty(self, db_infos, removed_difficulty):

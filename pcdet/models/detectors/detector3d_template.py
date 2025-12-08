@@ -162,10 +162,21 @@ class Detector3DTemplate(nn.Module):
         if self.model_cfg.get('RADAR_BACKBONE_2D', None) is None:
             return None, model_info_dict
 
-        radar_backbone_2d_module = backbones_2d.__all__[self.model_cfg.RADAR_BACKBONE_2D.NAME](
-            model_cfg=self.model_cfg.RADAR_BACKBONE_2D,
-            input_channels=model_info_dict.get('radar_num_bev_features', None)
-        )
+        # Pass baseline_model if available
+        kwargs = {
+            'model_cfg': self.model_cfg.RADAR_BACKBONE_2D,
+            'input_channels': model_info_dict.get('radar_num_bev_features', None)
+        }
+        if hasattr(self, 'baseline_model') and self.baseline_model is not None:
+            # Extract baseline's radar backbone if it exists
+            if hasattr(self.baseline_model, 'module_list'):
+                # Find radar backbone 2d in baseline's module list
+                for module in self.baseline_model.module_list:
+                    if module.__class__.__name__ == self.model_cfg.RADAR_BACKBONE_2D.NAME:
+                        kwargs['baseline_model'] = module
+                        break
+        
+        radar_backbone_2d_module = backbones_2d.__all__[self.model_cfg.RADAR_BACKBONE_2D.NAME](**kwargs)
         model_info_dict['module_list'].append(radar_backbone_2d_module)
         model_info_dict['radar_num_bev_features'] = radar_backbone_2d_module.num_bev_features
         return radar_backbone_2d_module, model_info_dict

@@ -11,8 +11,9 @@ import numpy as np
 
 
 class PillarNet_Multi_Sweep_Teacher(Detector3DTemplate):
-    def __init__(self, model_cfg, num_class, dataset):
+    def __init__(self, model_cfg, num_class, dataset, baseline_model=None):
         super().__init__(model_cfg=model_cfg, num_class=num_class, dataset=dataset)
+        self.baseline_model = baseline_model  # Store for backbone
         self.module_list = self.build_networks()
         self.model_cfg = model_cfg
 

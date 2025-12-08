@@ -140,7 +140,36 @@ def main():
         training=False
     )
 
-    model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=train_set)
+    # Load baseline model for Ver5 RKG (if needed)
+    baseline_model = None
+    if hasattr(cfg.MODEL, 'RADAR_BACKBONE_2D') and cfg.MODEL.RADAR_BACKBONE_2D.get('BASELINE_CHECKPOINT', None):
+        baseline_ckpt = cfg.MODEL.RADAR_BACKBONE_2D.BASELINE_CHECKPOINT
+        if cfg.LOCAL_RANK == 0:
+            logger.info(f"[Ver5] Loading Baseline Student from {baseline_ckpt}...")
+        
+        # Create a modified config without BASELINE_CHECKPOINT to avoid recursion
+        import copy
+        baseline_cfg = copy.deepcopy(cfg)
+        baseline_cfg.MODEL.RADAR_BACKBONE_2D.BASELINE_CHECKPOINT = None
+        
+        # Build baseline model
+        baseline_model = build_network(model_cfg=baseline_cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=train_set)
+        
+        # Load weights
+        checkpoint = torch.load(baseline_ckpt, map_location='cpu')
+        state_dict = checkpoint.get('model_state', checkpoint)
+        missing, unexpected = baseline_model.load_state_dict(state_dict, strict=False)
+        
+        if cfg.LOCAL_RANK == 0:
+            logger.info(f"[Ver5] Baseline loaded. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
+        
+        # Freeze and set to eval mode
+        for param in baseline_model.parameters():
+            param.requires_grad = False
+        baseline_model.eval()
+        baseline_model.cuda()
+
+    model = build_network(model_cfg=cfg.MODEL, num_class=len(cfg.CLASS_NAMES), dataset=train_set, baseline_model=baseline_model)
     if args.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model.cuda()

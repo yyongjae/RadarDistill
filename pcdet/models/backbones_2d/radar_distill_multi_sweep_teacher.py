@@ -85,34 +85,13 @@ class Radar_Distill_Multi_Sweep_Teacher(BaseBEVBackboneV2):
         self.gater_low  = SweepGaterV5(**gater_kwargs)
         self.gater_high = SweepGaterV5(**gater_kwargs)
         
-        # ---------- Baseline Student 설정 ----------
-        self.baseline_model = None
-        # Default path
-        default_ckpt = '/home/yongjae/4drkd/RadarDistill/output/radar_distill/radar_distill_train/baseline_b8/ckpt/checkpoint_epoch_40.pth'
-        baseline_ckpt = self.model_cfg.get('BASELINE_CHECKPOINT', default_ckpt)
-        
-        if baseline_ckpt is not None:
-            print(f"Loading Baseline Student from {baseline_ckpt}...")
-            baseline_cfg = copy.deepcopy(self.model_cfg)
-            if 'BASELINE_CHECKPOINT' in baseline_cfg:
-                del baseline_cfg['BASELINE_CHECKPOINT']
-            
-            # Instantiate Baseline Student
-            self.baseline_model = self.__class__(baseline_cfg, **kwargs)
-            
-            # Load Weights
-            checkpoint = torch.load(baseline_ckpt, map_location='cpu')
-            state_dict = checkpoint.get('model_state', checkpoint)
-            
-            # Load and Freeze
-            missing, unexpected = self.baseline_model.load_state_dict(state_dict, strict=False)
-            print(f"Baseline Student Loaded. Missing: {len(missing)}, Unexpected: {len(unexpected)}")
-            
-            for param in self.baseline_model.parameters():
-                param.requires_grad = False
-            self.baseline_model.eval()
-        else:
-            print("WARNING: BASELINE_CHECKPOINT not found! RKG won't work properly.")
+        # ---------- Baseline Student (passed from train.py) ----------
+        self.baseline_model = kwargs.get('baseline_model', None)
+        if self.baseline_model is None:
+            import torch.distributed as dist
+            is_rank_zero = not dist.is_initialized() or dist.get_rank() == 0
+            if is_rank_zero:
+                print("[Ver5] WARNING: No baseline model provided! RKG won't work properly.")
 
     # ---------------- distill losses (원본 유지) ----------------
     def low_loss(self, lidar_bev, radar_bev):
@@ -136,7 +115,8 @@ class Radar_Distill_Multi_Sweep_Teacher(BaseBEVBackboneV2):
 
         feature_loss = 3e-4 * loss_radar_lidar + 5e-5 * loss_radar_de_lidar
         loss = nn.L1Loss()
-        mask_loss = loss(radar_sigmoid := clip_sigmoid(radar_mask), lidar_mask)
+        radar_sigmoid = clip_sigmoid(radar_mask)
+        mask_loss = loss(radar_sigmoid, lidar_mask)
 
         return feature_loss, mask_loss
     
@@ -170,6 +150,10 @@ class Radar_Distill_Multi_Sweep_Teacher(BaseBEVBackboneV2):
         return 0.5 * (high_loss + high_8x_loss)
     
     def get_loss(self, batch_dict):
+        # Debug counter for first few iterations
+        if not hasattr(self, '_debug_counter'):
+            self._debug_counter = 0
+        
         # 1. Features (Radar Student)
         low_radar_bev = batch_dict['radar_multi_scale_2d_features']['radar_spatial_features_8x_2']
         low_radar_de_8x = batch_dict['radar_multi_scale_2d_features']['radar_spatial_features_8x_1']
@@ -189,6 +173,12 @@ class Radar_Distill_Multi_Sweep_Teacher(BaseBEVBackboneV2):
         T_high8 = batch_dict['lidar_teachers_high_8x'] # [B, N, C, H8, W8]
         N = T_low.shape[1]
         
+        # DEBUG: First iteration check
+        if self._debug_counter < 3:
+            print(f"\n[Ver5 Debug {self._debug_counter}] Teacher shapes: T_low={T_low.shape}, N={N}")
+            num_valid_boxes = [(gt_boxes[b, :, 3] > 0).sum().item() for b in range(gt_boxes.shape[0])]
+            print(f"[Ver5 Debug {self._debug_counter}] Valid boxes per sample: {num_valid_boxes}")
+        
         # 2. Baseline Inference
         if self.baseline_model is not None:
             batch_dict_base = batch_dict.copy()
@@ -196,8 +186,13 @@ class Radar_Distill_Multi_Sweep_Teacher(BaseBEVBackboneV2):
             with torch.no_grad():
                 self.baseline_model(batch_dict_base)
             base_low_radar_bev = batch_dict_base['radar_multi_scale_2d_features']['radar_spatial_features_8x_2']
+            
+            if self._debug_counter < 3:
+                print(f"[Ver5 Debug {self._debug_counter}] Baseline inference OK: shape={base_low_radar_bev.shape}")
         else:
             base_low_radar_bev = low_radar_bev.detach()
+            if self._debug_counter < 3:
+                print(f"[Ver5 Debug {self._debug_counter}] WARNING: No baseline model!")
 
         # 3. Gating (Object-wise)
         gt_boxes_info = {
@@ -212,10 +207,21 @@ class Radar_Distill_Multi_Sweep_Teacher(BaseBEVBackboneV2):
             T=T_low,
             gt_boxes_info=gt_boxes_info
         )
+        
+        if self._debug_counter < 3:
+            print(f"[Ver5 Debug {self._debug_counter}] Gating OK: weights_low={weights_low.shape}")
+            print(f"[Ver5 Debug {self._debug_counter}] RKG stats: gain_t0={stats_low.get('gain_t0', 0):.4f}, gain_t{N-1}={stats_low.get(f'gain_t{N-1}', 0):.4f}")
+            weight_nonzero = (weights_low.sum(dim=1, keepdim=True) > 1e-6).sum().item()
+            print(f"[Ver5 Debug {self._debug_counter}] Non-zero weight pixels: {weight_nonzero}")
 
         # 4. Aggregation
         # Object-wise weighted sum (배경은 0)
         low_lidar_bev_agg = (weights_low * T_low).sum(dim=1)  # [B, C, H, W]
+        
+        if self._debug_counter < 3:
+            agg_nonzero = (low_lidar_bev_agg.abs().sum(dim=1, keepdim=True) > 1e-6).sum().item()
+            print(f"[Ver5 Debug {self._debug_counter}] Aggregation OK: non-zero pixels={agg_nonzero}")
+            self._debug_counter += 1
         
         # High Level: 단순히 s10 사용 (가장 정보량이 많은 sweep)
         # NOTE: High Level에도 Object-wise Gating을 적용하려면 self.gater_high 추가 필요

@@ -10,8 +10,7 @@ import numpy as np
 from ...ops.basicblock.modules.Basicblock_convn import ConvNeXtBlock
 from .base_bev_backbone import BaseBEVBackboneV2
 
-# ▼▼ Gater V5로 교체
-from .gating_ver5 import SweepGaterV5
+from .gating_ver6 import SweepGaterV6
 
 def clip_sigmoid(x, eps=1e-4):
     return torch.clamp(x.sigmoid(), min=eps, max=1 - eps)
@@ -183,14 +182,18 @@ class Radar_Distill_Multi_Sweep_Teacher(BaseBEVBackboneV2):
         if self.baseline_model is not None:
             batch_dict_base = batch_dict.copy()
             batch_dict_base['radar_multi_scale_2d_features'] = batch_dict['radar_multi_scale_2d_features'].copy()
+
+            # 이노마는 no distilled student
             with torch.no_grad():
                 self.baseline_model(batch_dict_base)
+
             base_low_radar_bev = batch_dict_base['radar_multi_scale_2d_features']['radar_spatial_features_8x_2']
-            
+            base_high_radar_bev = batch_dict_base['radar_spatial_features_2d']
             if self._debug_counter < 3:
                 print(f"[Ver5 Debug {self._debug_counter}] Baseline inference OK: shape={base_low_radar_bev.shape}")
         else:
             base_low_radar_bev = low_radar_bev.detach()
+            base_high_radar_bev = high_radar_bev.detach()
             if self._debug_counter < 3:
                 print(f"[Ver5 Debug {self._debug_counter}] WARNING: No baseline model!")
 
@@ -207,9 +210,22 @@ class Radar_Distill_Multi_Sweep_Teacher(BaseBEVBackboneV2):
             T=T_low,
             gt_boxes_info=gt_boxes_info
         )
+
+        weights_high, _, stats_high = self.gater_high(
+            S_curr=high_radar_bev,
+            S_base=base_high_radar_bev,
+            T=T_high,
+            gt_boxes_info=gt_boxes_info
+        )
+        weights_high_8x = F.interpolate(
+            weights_high.squeeze(2), 
+            size=T_high8.shape[-2:], # (H8, W8) 크기로 늘림
+            mode='nearest' # Segmentation Mask 개념이므로 nearest 사용
+        ).unsqueeze(2)
         
         if self._debug_counter < 3:
             print(f"[Ver5 Debug {self._debug_counter}] Gating OK: weights_low={weights_low.shape}")
+            print(f"[Ver5 Debug {self._debug_counter}] Gating OK: weights_high={weights_high.shape}")
             print(f"[Ver5 Debug {self._debug_counter}] RKG stats: gain_t0={stats_low.get('gain_t0', 0):.4f}, gain_t{N-1}={stats_low.get(f'gain_t{N-1}', 0):.4f}")
             weight_nonzero = (weights_low.sum(dim=1, keepdim=True) > 1e-6).sum().item()
             print(f"[Ver5 Debug {self._debug_counter}] Non-zero weight pixels: {weight_nonzero}")
@@ -217,22 +233,22 @@ class Radar_Distill_Multi_Sweep_Teacher(BaseBEVBackboneV2):
         # 4. Aggregation
         # Object-wise weighted sum (배경은 0)
         low_lidar_bev_agg = (weights_low * T_low).sum(dim=1)  # [B, C, H, W]
-        
+        high_lidar_bev_agg = (weights_high * T_high).sum(dim=1)  # [B, C, H, W]
+        high_lidar_bev_8x_agg = (weights_high_8x * T_high8).sum(dim=1)  # [B, C, H8, W8]
+
         if self._debug_counter < 3:
             agg_nonzero = (low_lidar_bev_agg.abs().sum(dim=1, keepdim=True) > 1e-6).sum().item()
             print(f"[Ver5 Debug {self._debug_counter}] Aggregation OK: non-zero pixels={agg_nonzero}")
             self._debug_counter += 1
-        
-        # High Level: 단순히 s10 사용 (가장 정보량이 많은 sweep)
-        # NOTE: High Level에도 Object-wise Gating을 적용하려면 self.gater_high 추가 필요
-        high_lidar_bev = T_high[:, -1, :, :, :]      # [B, C, H, W] - s10
-        high_lidar_bev_8x = T_high8[:, -1, :, :, :]  # [B, C, H8, W8] - s10
+
+        # high_lidar_bev = T_high[:, -1, :, :, :]      # [B, C, H, W] - s10
+        # high_lidar_bev_8x = T_high8[:, -1, :, :, :]  # [B, C, H8, W8] - s10
 
         # 5. Loss Calculation
         feature_loss, mask_loss = self.low_loss(low_lidar_bev_agg, low_radar_bev)
         de_8x_feature_loss, de_8x_mask_loss = self.low_loss(low_lidar_bev_agg, low_radar_de_8x)
         
-        high_distill_loss = self.high_loss(high_radar_bev, high_radar_bev_8x, high_lidar_bev, high_lidar_bev_8x, gt_heatmaps, radar_pred_dicts)
+        high_distill_loss = self.high_loss(high_radar_bev, high_radar_bev_8x, high_lidar_bev_agg, high_lidar_bev_8x_agg, gt_heatmaps, radar_pred_dicts)
         high_distill_loss *= 25
         
         low_distill_loss = 0.5 * (feature_loss + de_8x_feature_loss) + 0.5 * (mask_loss + de_8x_mask_loss)
